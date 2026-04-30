@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Peptide Calculator",
+    "slug": "peptide-calculator",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "dose-reminders"
+        }
+      ]
+    ],
+    "android": {
+      "package": "com.peptidecalculator.app",
+      "permissions": [
+        "SCHEDULE_EXACT_ALARM"
+      ]
+    }
+  }
+}
