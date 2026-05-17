@@ -60,8 +60,6 @@ const fmtTime = (iso: string) =>
 const fmtDateLong = (d: Date) =>
   d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
 
-const fmtDateShort = (d: Date) =>
-  d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 
 const isDoseDay = (plan: SavedPlan, date: Date): boolean => {
   const created = new Date(plan.createdAt);
@@ -256,11 +254,6 @@ export default function App() {
   };
 
   const todayEntries = buildSchedule(1);
-  const upcomingEntries = buildSchedule(8).filter((e) => {
-    const todayMidnight = new Date();
-    todayMidnight.setHours(0, 0, 0, 0);
-    return e.date > todayMidnight;
-  });
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
@@ -458,26 +451,6 @@ export default function App() {
               )}
             </View>
 
-            {upcomingEntries.length > 0 && (
-              <View style={s.schedSection}>
-                <Text style={s.schedSectionTitle}>Upcoming (next 7 days)</Text>
-                {upcomingEntries.map(({ key, plan, date, doseTime }) => (
-                  <View key={key} style={s.schedItem}>
-                    <View style={s.schedLeft}>
-                      <View style={[s.dot, s.dotUpcoming]} />
-                      <Text style={s.schedTimeUpcoming}>{fmtDateShort(date)}</Text>
-                    </View>
-                    <View style={s.schedRight}>
-                      <Text style={s.schedName}>{plan.name}</Text>
-                      <Text style={s.schedDose}>
-                        {formatMg(plan.targetDoseMg)} at{" "}
-                        {doseTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
-                      </Text>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
 
             <View style={{ height: 16 }} />
           </ScrollView>
