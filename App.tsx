@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -17,139 +18,143 @@ import { SavedPlan } from "./src/types";
 import { formatMg, formatMl, generateDoseOptions, parsePositiveNumber } from "./src/utils/calculator";
 import {
   cancelReminderSeriesAsync,
+  prepareNotificationsAsync,
   refreshActiveReminderWindowsAsync,
   requestReminderPermissionsAsync,
   scheduleReminderSeriesAsync,
 } from "./src/utils/notifications";
 import { loadPlans, savePlans } from "./src/utils/storage";
 
-const createPlanId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const promoMessage = {
-  eyebrow: "Featured peptide",
-  title: "Promote a vial, bundle, or limited drop here.",
-  body: "This bottom slot is reserved for your sales message, pricing, or a direct download-to-store campaign.",
-  cta: "Shop now",
+// ─── Design tokens ────────────────────────────────────────────────────────────
+const C = {
+  primary:      "#1B6B4A",
+  primaryMid:   "#2D8A60",
+  primaryLight: "#E8F5EE",
+  accent:       "#52B788",
+  bg:           "#F4F7F5",
+  card:         "#FFFFFF",
+  border:       "#E8EDF0",
+  text:         "#1A2332",
+  textSub:      "#64748B",
+  textMuted:    "#94A3B8",
+  danger:       "#DC2626",
+  dangerLight:  "#FEF2F2",
+  warn:         "#F59E0B",
+  warnLight:    "#FFFBEB",
 };
+
+// ─── Types & helpers ──────────────────────────────────────────────────────────
+type Tab = "add" | "schedule" | "cabinet";
+
+const createPlanId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const defaultReminderTime = () => {
-  const date = new Date();
-  date.setHours(8, 0, 0, 0);
-  return date;
+  const d = new Date();
+  d.setHours(8, 0, 0, 0);
+  return d;
 };
 
-const formatTimeLabel = (iso: string) =>
-  new Date(iso).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+const fmtTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
+const fmtDateLong = (d: Date) =>
+  d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+
+const fmtDateShort = (d: Date) =>
+  d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+
+const isDoseDay = (plan: SavedPlan, date: Date): boolean => {
+  const created = new Date(plan.createdAt);
+  created.setHours(0, 0, 0, 0);
+  const target = new Date(date);
+  target.setHours(0, 0, 0, 0);
+  const diff = Math.round((target.getTime() - created.getTime()) / 86400000);
+  return diff >= 0 && diff % plan.intervalDays === 0;
+};
+
+// ─── App root ─────────────────────────────────────────────────────────────────
 export default function App() {
+  const [activeTab, setActiveTab] = useState<Tab>("add");
+
+  // Calculator
   const [vialMg, setVialMg] = useState("10");
   const [syringeMaxMl, setSyringeMaxMl] = useState("1");
   const [targetDoseMg, setTargetDoseMg] = useState("2");
+  const [calcDone, setCalcDone] = useState(false);
   const [selectedOptionId, setSelectedOptionId] = useState("");
 
+  // Plan creation
   const [planName, setPlanName] = useState("");
   const [intervalDays, setIntervalDays] = useState("3");
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [reminderTime, setReminderTime] = useState(defaultReminderTime);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
+  // Data
   const [plans, setPlans] = useState<SavedPlan[]>([]);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null);
 
-  const parsedVialMg = parsePositiveNumber(vialMg);
+  const parsedVialMg       = parsePositiveNumber(vialMg);
   const parsedSyringeMaxMl = parsePositiveNumber(syringeMaxMl);
   const parsedTargetDoseMg = parsePositiveNumber(targetDoseMg);
   const parsedIntervalDays = Math.max(1, Math.round(parsePositiveNumber(intervalDays)));
 
   const options = useMemo(
     () => generateDoseOptions(parsedVialMg, parsedTargetDoseMg, parsedSyringeMaxMl),
-    [parsedSyringeMaxMl, parsedTargetDoseMg, parsedVialMg],
+    [parsedVialMg, parsedTargetDoseMg, parsedSyringeMaxMl],
   );
 
-  const selectedOption = options.find((option) => option.id === selectedOptionId) ?? options[0] ?? null;
+  const selectedOption = options.find((o) => o.id === selectedOptionId) ?? options[0] ?? null;
 
   useEffect(() => {
-    if (!selectedOption) {
-      setSelectedOptionId("");
-      return;
-    }
-
-    if (selectedOption.id !== selectedOptionId) {
-      setSelectedOptionId(selectedOption.id);
-    }
+    if (!selectedOption) { setSelectedOptionId(""); return; }
+    if (selectedOption.id !== selectedOptionId) setSelectedOptionId(selectedOption.id);
   }, [selectedOption, selectedOptionId]);
 
   useEffect(() => {
-    let isMounted = true;
-
-    const bootstrap = async () => {
-      const storedPlans = await loadPlans();
-      let hydratedPlans = storedPlans;
-
+    let alive = true;
+    (async () => {
+      await prepareNotificationsAsync().catch(() => {});
+      const stored = await loadPlans();
+      let hydrated = stored;
       try {
-        hydratedPlans = await refreshActiveReminderWindowsAsync(storedPlans);
-        await savePlans(hydratedPlans);
-      } catch {
-        hydratedPlans = storedPlans;
-      }
-
-      if (!isMounted) {
-        return;
-      }
-
-      setPlans(hydratedPlans);
-      setIsBootstrapping(false);
-    };
-
-    bootstrap().catch(() => {
-      if (isMounted) {
-        setIsBootstrapping(false);
-      }
-    });
-
-    return () => {
-      isMounted = false;
-    };
+        hydrated = await refreshActiveReminderWindowsAsync(stored);
+        await savePlans(hydrated);
+      } catch { hydrated = stored; }
+      if (alive) { setPlans(hydrated); setIsBootstrapping(false); }
+    })().catch(() => { if (alive) setIsBootstrapping(false); });
+    return () => { alive = false; };
   }, []);
 
-  const persistPlans = async (nextPlans: SavedPlan[]) => {
-    setPlans(nextPlans);
-    await savePlans(nextPlans);
+  const persistPlans = async (next: SavedPlan[]) => {
+    setPlans(next);
+    await savePlans(next);
   };
 
-  const resetSaveFields = () => {
-    setPlanName("");
-    setReminderEnabled(true);
-    setIntervalDays("3");
-    setReminderTime(defaultReminderTime());
+  const resetForm = () => {
+    setVialMg("10"); setSyringeMaxMl("1"); setTargetDoseMg("2");
+    setPlanName(""); setIntervalDays("3");
+    setReminderEnabled(true); setReminderTime(defaultReminderTime());
+    setCalcDone(false); setSelectedOptionId("");
+  };
+
+  const handleCalculate = () => {
+    if (!parsedVialMg || !parsedSyringeMaxMl || !parsedTargetDoseMg)
+      return Alert.alert("Missing details", "Enter all three values to continue.");
+    if (parsedTargetDoseMg > parsedVialMg)
+      return Alert.alert("Dose too high", "Target dose cannot exceed the vial total milligrams.");
+    if (!options.length)
+      return Alert.alert("No valid options", "Try a smaller dose or a larger syringe size.");
+    setCalcDone(true);
   };
 
   const handleSavePlan = async () => {
-    if (!selectedOption) {
-      Alert.alert(
-        "No valid options yet",
-        "Try changing the vial amount, target dose, or syringe size until a dose option appears.",
-      );
-      return;
-    }
-
-    if (!parsedVialMg || !parsedSyringeMaxMl || !parsedTargetDoseMg) {
-      Alert.alert("Missing details", "Enter the vial amount, syringe max, and target dose first.");
-      return;
-    }
-
-    if (parsedTargetDoseMg > parsedVialMg) {
-      Alert.alert("Dose is too high", "The requested dose cannot be larger than the total milligrams in the vial.");
-      return;
-    }
-
+    if (!selectedOption) return;
     setIsSaving(true);
-
     try {
-      const nextPlan: SavedPlan = {
+      const plan: SavedPlan = {
         id: createPlanId(),
         name: planName.trim() || `${formatMg(parsedTargetDoseMg)} plan`,
         vialMg: parsedVialMg,
@@ -166,284 +171,436 @@ export default function App() {
       };
 
       if (reminderEnabled) {
-        const allowed = await requestReminderPermissionsAsync();
-
-        if (!allowed) {
-          Alert.alert("Notifications are off", "The fill plan was saved, but reminders were not enabled.");
-          nextPlan.reminderEnabled = false;
+        const ok = await requestReminderPermissionsAsync();
+        if (!ok) {
+          Alert.alert(
+            "Notifications blocked",
+            "Plan saved — enable notifications in device settings to get reminders.",
+          );
+          plan.reminderEnabled = false;
         } else {
-          nextPlan.notificationIds = await scheduleReminderSeriesAsync(nextPlan);
+          plan.notificationIds = await scheduleReminderSeriesAsync(plan);
         }
       }
 
-      const nextPlans = [nextPlan, ...plans];
-      await persistPlans(nextPlans);
-      resetSaveFields();
-
-      Alert.alert("Saved", "Your fill plan is ready and can be reopened from the saved plans section.");
+      await persistPlans([plan, ...plans]);
+      resetForm();
+      Alert.alert("Peptide saved!", "Reminders are scheduled. Check the Cabinet tab to manage it.");
     } finally {
       setIsSaving(false);
     }
   };
 
-  const loadPlanIntoCalculator = (plan: SavedPlan) => {
-    setVialMg(String(plan.vialMg));
-    setSyringeMaxMl(String(plan.syringeMaxMl));
-    setTargetDoseMg(String(plan.targetDoseMg));
-    setPlanName(plan.name);
-    setIntervalDays(String(plan.intervalDays));
-    setReminderEnabled(plan.reminderEnabled);
-    setReminderTime(new Date(plan.reminderTimeIso));
-    setSelectedOptionId(`${plan.selectedWaterMl.toFixed(1)}-${plan.selectedDrawMl.toFixed(3)}`);
-  };
-
   const toggleReminder = async (plan: SavedPlan) => {
-    const updatedPlans = [...plans];
-    const index = updatedPlans.findIndex((item) => item.id === plan.id);
-
-    if (index < 0) {
-      return;
+    const idx = plans.findIndex((p) => p.id === plan.id);
+    if (idx < 0) return;
+    const updated = [...plans];
+    if (plan.reminderEnabled) {
+      await cancelReminderSeriesAsync(plan.notificationIds);
+      updated[idx] = { ...plan, reminderEnabled: false, notificationIds: [] };
+    } else {
+      const ok = await requestReminderPermissionsAsync();
+      if (!ok) {
+        Alert.alert("Notifications blocked", "Enable notifications in device settings first.");
+        return;
+      }
+      const p2 = { ...plan, reminderEnabled: true };
+      p2.notificationIds = await scheduleReminderSeriesAsync(p2);
+      updated[idx] = p2;
     }
-
-    const current = updatedPlans[index];
-
-    if (current.reminderEnabled) {
-      await cancelReminderSeriesAsync(current.notificationIds);
-      updatedPlans[index] = {
-        ...current,
-        reminderEnabled: false,
-        notificationIds: [],
-      };
-      await persistPlans(updatedPlans);
-      return;
-    }
-
-    const allowed = await requestReminderPermissionsAsync();
-
-    if (!allowed) {
-      Alert.alert("Notifications are off", "Enable notifications on the device to turn this reminder back on.");
-      return;
-    }
-
-    const enabledPlan: SavedPlan = {
-      ...current,
-      reminderEnabled: true,
-    };
-
-    enabledPlan.notificationIds = await scheduleReminderSeriesAsync(enabledPlan);
-    updatedPlans[index] = enabledPlan;
-    await persistPlans(updatedPlans);
+    await persistPlans(updated);
   };
 
-  const deletePlan = async (plan: SavedPlan) => {
-    await cancelReminderSeriesAsync(plan.notificationIds);
-    const nextPlans = plans.filter((item) => item.id !== plan.id);
-    await persistPlans(nextPlans);
+  const deletePlan = (plan: SavedPlan) => {
+    Alert.alert("Remove Peptide", `Delete "${plan.name}"?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          await cancelReminderSeriesAsync(plan.notificationIds);
+          await persistPlans(plans.filter((p) => p.id !== plan.id));
+          if (expandedPlanId === plan.id) setExpandedPlanId(null);
+        },
+      },
+    ]);
   };
 
+  // Returns dose entries for the next `days` days
+  const buildSchedule = (days: number) => {
+    const now = new Date();
+    const entries: Array<{
+      key: string;
+      plan: SavedPlan;
+      doseTime: Date;
+      date: Date;
+      isPast: boolean;
+    }> = [];
+
+    for (let d = 0; d < days; d++) {
+      const date = new Date();
+      date.setDate(date.getDate() + d);
+      date.setHours(0, 0, 0, 0);
+
+      for (const plan of plans) {
+        if (!plan.reminderEnabled) continue;
+        if (!isDoseDay(plan, date)) continue;
+        const rt = new Date(plan.reminderTimeIso);
+        const doseTime = new Date(date);
+        doseTime.setHours(rt.getHours(), rt.getMinutes(), 0, 0);
+        entries.push({ key: `${plan.id}-${d}`, plan, doseTime, date, isPast: doseTime < now });
+      }
+    }
+
+    return entries.sort((a, b) => a.doseTime.getTime() - b.doseTime.getTime());
+  };
+
+  const todayEntries = buildSchedule(1);
+  const upcomingEntries = buildSchedule(8).filter((e) => {
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+    return e.date > todayMidnight;
+  });
+
+  // ─── Render ────────────────────────────────────────────────────────────────
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={s.root}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.hero}>
-          <View style={styles.heroBadge}>
-            <Text style={styles.heroBadgeText}>Peptide Calculator</Text>
-          </View>
-          <Text style={styles.heroTitle}>Simple reconstitution math, clean saved fills, and dose reminders.</Text>
-          <Text style={styles.heroSubtitle}>
-            Enter the vial strength, choose your syringe limit, and compare easy-to-measure bacteriostatic water options
-            up to 3 mL.
-          </Text>
-        </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Calculator</Text>
-          <Text style={styles.cardSubtitle}>
-            This app is for planning convenience only. Always verify reconstitution and dosing instructions with your
-            clinician or pharmacy.
-          </Text>
+      <View style={s.body}>
 
-          <View style={styles.inputGrid}>
-            <Field
-              label="Milligrams in vial"
-              value={vialMg}
-              onChangeText={setVialMg}
-              placeholder="10"
-              suffix="mg"
-            />
-            <Field
-              label="Syringe max"
-              value={syringeMaxMl}
-              onChangeText={setSyringeMaxMl}
-              placeholder="1"
-              suffix="mL"
-            />
-            <Field
-              label="Dose needed"
-              value={targetDoseMg}
-              onChangeText={setTargetDoseMg}
-              placeholder="2"
-              suffix="mg"
-            />
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.sectionRow}>
-            <Text style={styles.cardTitle}>Dose options</Text>
-            <Text style={styles.sectionMeta}>Max water: 3.0 mL</Text>
-          </View>
-
-          {selectedOption ? (
-            <View style={styles.highlightPanel}>
-              <Text style={styles.highlightLabel}>Recommended right now</Text>
-              <Text style={styles.highlightValue}>{formatMl(selectedOption.drawMl)} to draw</Text>
-              <Text style={styles.highlightBody}>
-                Add {formatMl(selectedOption.waterMl)} bacteriostatic water. Concentration becomes{" "}
-                {formatMg(selectedOption.concentrationMgPerMl)} per mL.
-              </Text>
+        {/* ── ADD PEPTIDE TAB ──────────────────────────────────────────────── */}
+        {activeTab === "add" && (
+          <ScrollView
+            contentContainerStyle={s.scroll}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={s.pageHead}>
+              <Text style={s.pageTitle}>Add a Peptide</Text>
+              <Text style={s.pageSub}>Enter vial details to calculate your dose options.</Text>
             </View>
-          ) : (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>No valid options yet</Text>
-              <Text style={styles.emptyBody}>
-                Try a smaller dose or a larger syringe size. The selected draw amount has to fit inside the syringe
-                limit.
-              </Text>
-            </View>
-          )}
 
-          {options.map((option, index) => {
-            const isSelected = selectedOption?.id === option.id;
-            return (
-              <Pressable
-                key={option.id}
-                onPress={() => setSelectedOptionId(option.id)}
-                style={[styles.optionCard, isSelected && styles.optionCardSelected]}
-              >
-                <View style={styles.optionHeader}>
-                  <Text style={styles.optionTag}>{index === 0 ? "Best fit" : `Option ${index + 1}`}</Text>
-                  <Text style={styles.optionDraw}>{formatMl(option.drawMl)}</Text>
-                </View>
-                <Text style={styles.optionText}>Add {formatMl(option.waterMl)} bacteriostatic water.</Text>
-                <Text style={styles.optionText}>Draw about {option.unitsOnOneMlSyringe} units on a 1 mL syringe.</Text>
-                <Text style={styles.optionText}>Concentration: {formatMg(option.concentrationMgPerMl)} per mL.</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Save this fill</Text>
-          <Text style={styles.cardSubtitle}>
-            Save your preferred setup, then optionally remind the user to take 1 dose every X days at a chosen time.
-          </Text>
-
-          <Field
-            label="Plan name"
-            value={planName}
-            onChangeText={setPlanName}
-            placeholder="Morning plan"
-            keyboardType="default"
-          />
-
-          <View style={styles.inlineRow}>
-            <View style={styles.inlineField}>
+            {/* Step 1: Peptide details */}
+            <View style={s.card}>
+              <Text style={s.stepBadge}>STEP 1 OF 3</Text>
+              <Text style={s.cardTitle}>Peptide Details</Text>
               <Field
-                label="Every X days"
-                value={intervalDays}
-                onChangeText={setIntervalDays}
-                placeholder="3"
-                suffix="days"
+                label="Milligrams in vial"
+                value={vialMg}
+                onChangeText={setVialMg}
+                placeholder="10"
+                suffix="mg"
               />
+              <Field
+                label="Syringe capacity"
+                value={syringeMaxMl}
+                onChangeText={setSyringeMaxMl}
+                placeholder="1"
+                suffix="mL"
+              />
+              <Field
+                label="Target dose"
+                value={targetDoseMg}
+                onChangeText={setTargetDoseMg}
+                placeholder="2"
+                suffix="mg"
+              />
+              {!calcDone && (
+                <Pressable style={s.primaryBtn} onPress={handleCalculate}>
+                  <Text style={s.primaryBtnText}>Calculate Options</Text>
+                </Pressable>
+              )}
             </View>
 
-            <View style={styles.timeField}>
-              <Text style={styles.fieldLabel}>Reminder time</Text>
-              <Pressable onPress={() => setShowTimePicker(true)} style={styles.timeButton}>
-                <Text style={styles.timeButtonLabel}>{formatTimeLabel(reminderTime.toISOString())}</Text>
-              </Pressable>
-            </View>
-          </View>
-
-          <View style={styles.switchRow}>
-            <View>
-              <Text style={styles.switchTitle}>Enable reminders</Text>
-              <Text style={styles.switchSubtitle}>The reminder message includes the exact mL to draw.</Text>
-            </View>
-            <Switch value={reminderEnabled} onValueChange={setReminderEnabled} trackColor={{ true: "#0f766e" }} />
-          </View>
-
-          <Pressable onPress={handleSavePlan} style={styles.primaryButton} disabled={isSaving}>
-            <Text style={styles.primaryButtonText}>{isSaving ? "Saving..." : "Save fill plan"}</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.sectionRow}>
-            <Text style={styles.cardTitle}>Saved plans</Text>
-            <Text style={styles.sectionMeta}>{plans.length}</Text>
-          </View>
-
-          {isBootstrapping ? (
-            <Text style={styles.cardSubtitle}>Loading saved plans...</Text>
-          ) : plans.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>Nothing saved yet</Text>
-              <Text style={styles.emptyBody}>Pick a dose option above, then save it so it can be reused later.</Text>
-            </View>
-          ) : (
-            plans.map((plan) => (
-              <View key={plan.id} style={styles.savedCard}>
-                <View style={styles.savedHeader}>
-                  <View>
-                    <Text style={styles.savedTitle}>{plan.name}</Text>
-                    <Text style={styles.savedMeta}>
-                      {formatMg(plan.targetDoseMg)} dose • {formatMl(plan.selectedDrawMl)} draw
-                    </Text>
-                  </View>
-                  <View style={[styles.savedStatus, plan.reminderEnabled && styles.savedStatusActive]}>
-                    <Text style={[styles.savedStatusText, plan.reminderEnabled && styles.savedStatusTextActive]}>
-                      {plan.reminderEnabled ? "Reminder on" : "Reminder off"}
-                    </Text>
-                  </View>
-                </View>
-
-                <Text style={styles.savedDetail}>Add {formatMl(plan.selectedWaterMl)} bacteriostatic water.</Text>
-                <Text style={styles.savedDetail}>Concentration: {formatMg(plan.concentrationMgPerMl)} per mL.</Text>
-                <Text style={styles.savedDetail}>
-                  Schedule: every {plan.intervalDays} day{plan.intervalDays === 1 ? "" : "s"} at{" "}
-                  {formatTimeLabel(plan.reminderTimeIso)}.
+            {/* Step 2: BAC water selection — hidden until Step 1 complete */}
+            {calcDone && selectedOption && (
+              <View style={s.card}>
+                <Text style={s.stepBadge}>STEP 2 OF 3</Text>
+                <Text style={s.cardTitle}>Select BAC Water Amount</Text>
+                <Text style={s.cardSub}>
+                  Choose the amount that gives the easiest syringe reading.
                 </Text>
 
-                <View style={styles.savedActions}>
-                  <ActionButton label="Use again" onPress={() => loadPlanIntoCalculator(plan)} />
-                  <ActionButton
-                    label={plan.reminderEnabled ? "Pause reminder" : "Enable reminder"}
-                    onPress={() => toggleReminder(plan)}
-                  />
-                  <ActionButton label="Delete" destructive onPress={() => deletePlan(plan)} />
+                <View style={s.highlight}>
+                  <Text style={s.highlightLabel}>Best recommendation</Text>
+                  <Text style={s.highlightValue}>{formatMl(selectedOption.drawMl)} to draw</Text>
+                  <Text style={s.highlightBody}>
+                    {formatMl(selectedOption.waterMl)} BAC water · {formatMg(selectedOption.concentrationMgPerMl)}/mL
+                  </Text>
                 </View>
+
+                {options.map((opt, i) => {
+                  const sel = selectedOption?.id === opt.id;
+                  return (
+                    <Pressable
+                      key={opt.id}
+                      onPress={() => setSelectedOptionId(opt.id)}
+                      style={[s.optCard, sel && s.optCardSel]}
+                    >
+                      <View style={s.optRow}>
+                        <Text style={[s.optTag, sel && s.optTagSel]}>
+                          {i === 0 ? "Best fit" : `Option ${i + 1}`}
+                        </Text>
+                        <Text style={s.optDraw}>{formatMl(opt.drawMl)}</Text>
+                      </View>
+                      <Text style={s.optText}>
+                        {formatMl(opt.waterMl)} BAC water · {opt.unitsOnOneMlSyringe} units · {formatMg(opt.concentrationMgPerMl)}/mL
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
-            ))
-          )}
-        </View>
+            )}
 
-        <View style={styles.bottomAdSpacer} />
-      </ScrollView>
+            {/* Step 3: Name & Schedule — hidden until Step 1 complete */}
+            {calcDone && selectedOption && (
+              <View style={s.card}>
+                <Text style={s.stepBadge}>STEP 3 OF 3</Text>
+                <Text style={s.cardTitle}>Name & Schedule</Text>
 
-      <View style={styles.bottomAdShell}>
-        <View style={styles.bottomAdCard}>
-          <Text style={styles.bottomAdEyebrow}>{promoMessage.eyebrow}</Text>
-          <Text style={styles.bottomAdTitle}>{promoMessage.title}</Text>
-          <Text style={styles.bottomAdBody}>{promoMessage.body}</Text>
-          <Pressable style={styles.bottomAdButton}>
-            <Text style={styles.bottomAdButtonText}>{promoMessage.cta}</Text>
-          </Pressable>
-        </View>
+                <Field
+                  label="Plan name (optional)"
+                  value={planName}
+                  onChangeText={setPlanName}
+                  placeholder="e.g. BPC-157 morning"
+                  keyboardType="default"
+                />
+
+                <View style={s.rowFields}>
+                  <View style={s.rowHalf}>
+                    <Field
+                      label="Dose every"
+                      value={intervalDays}
+                      onChangeText={setIntervalDays}
+                      placeholder="3"
+                      suffix="days"
+                    />
+                  </View>
+                  <View style={s.rowHalf}>
+                    <Text style={s.fieldLabel}>Reminder time</Text>
+                    <Pressable style={s.timeBtn} onPress={() => setShowTimePicker(true)}>
+                      <Text style={s.timeBtnText}>{fmtTime(reminderTime.toISOString())}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                <View style={s.switchRow}>
+                  <View style={s.switchInfo}>
+                    <Text style={s.switchTitle}>Enable dose reminders</Text>
+                    <Text style={s.switchSub}>Get notified when it is time to dose</Text>
+                  </View>
+                  <Switch
+                    value={reminderEnabled}
+                    onValueChange={setReminderEnabled}
+                    trackColor={{ true: C.primary, false: "#CBD5E1" }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                <Pressable
+                  style={[s.primaryBtn, isSaving && s.primaryBtnDisabled]}
+                  onPress={handleSavePlan}
+                  disabled={isSaving}
+                >
+                  <Text style={s.primaryBtnText}>
+                    {isSaving ? "Saving..." : "Save Peptide Plan"}
+                  </Text>
+                </Pressable>
+
+                <Pressable style={s.ghostBtn} onPress={resetForm}>
+                  <Text style={s.ghostBtnText}>Start over</Text>
+                </Pressable>
+              </View>
+            )}
+
+            <View style={{ height: 16 }} />
+          </ScrollView>
+        )}
+
+        {/* ── DAILY SCHEDULE TAB ───────────────────────────────────────────── */}
+        {activeTab === "schedule" && (
+          <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+            <View style={s.pageHead}>
+              <Text style={s.pageTitle}>Daily Schedule</Text>
+              <Text style={s.pageSub}>{fmtDateLong(new Date())}</Text>
+            </View>
+
+            <View style={s.schedSection}>
+              <Text style={s.schedSectionTitle}>Today</Text>
+              {todayEntries.length === 0 ? (
+                <View style={s.empty}>
+                  <Text style={s.emptyTitle}>No doses today</Text>
+                  <Text style={s.emptySub}>
+                    {plans.length === 0
+                      ? "Add a peptide to start building your schedule."
+                      : "You are all clear for today."}
+                  </Text>
+                </View>
+              ) : (
+                todayEntries.map(({ key, plan, doseTime, isPast }) => (
+                  <View key={key} style={[s.schedItem, isPast && s.schedItemPast]}>
+                    <View style={s.schedLeft}>
+                      <View style={[s.dot, isPast ? s.dotPast : s.dotToday]} />
+                      <Text style={[s.schedTime, isPast && s.schedTimePast]}>
+                        {doseTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                      </Text>
+                    </View>
+                    <View style={s.schedRight}>
+                      <Text style={[s.schedName, isPast && s.schedNamePast]}>{plan.name}</Text>
+                      <Text style={s.schedDose}>
+                        {formatMg(plan.targetDoseMg)} · Draw {formatMl(plan.selectedDrawMl)}
+                      </Text>
+                      {isPast && <Text style={s.schedDoneTag}>Done</Text>}
+                    </View>
+                  </View>
+                ))
+              )}
+            </View>
+
+            {upcomingEntries.length > 0 && (
+              <View style={s.schedSection}>
+                <Text style={s.schedSectionTitle}>Upcoming (next 7 days)</Text>
+                {upcomingEntries.map(({ key, plan, date, doseTime }) => (
+                  <View key={key} style={s.schedItem}>
+                    <View style={s.schedLeft}>
+                      <View style={[s.dot, s.dotUpcoming]} />
+                      <Text style={s.schedTimeUpcoming}>{fmtDateShort(date)}</Text>
+                    </View>
+                    <View style={s.schedRight}>
+                      <Text style={s.schedName}>{plan.name}</Text>
+                      <Text style={s.schedDose}>
+                        {formatMg(plan.targetDoseMg)} at{" "}
+                        {doseTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            <View style={{ height: 16 }} />
+          </ScrollView>
+        )}
+
+        {/* ── CABINET TAB ──────────────────────────────────────────────────── */}
+        {activeTab === "cabinet" && (
+          <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+            <View style={s.pageHead}>
+              <Text style={s.pageTitle}>Cabinet</Text>
+              <Text style={s.pageSub}>
+                {isBootstrapping
+                  ? "Loading..."
+                  : plans.length === 0
+                  ? "No peptides saved yet."
+                  : `${plans.length} peptide${plans.length === 1 ? "" : "s"} saved`}
+              </Text>
+            </View>
+
+            {!isBootstrapping && plans.length === 0 ? (
+              <View style={s.empty}>
+                <Text style={s.emptyTitle}>Your cabinet is empty</Text>
+                <Text style={s.emptySub}>Add a peptide using the Add tab to get started.</Text>
+                <Pressable
+                  style={[s.primaryBtn, { marginTop: 14, alignSelf: "stretch" }]}
+                  onPress={() => setActiveTab("add")}
+                >
+                  <Text style={s.primaryBtnText}>Add a Peptide</Text>
+                </Pressable>
+              </View>
+            ) : (
+              plans.map((plan) => {
+                const expanded = expandedPlanId === plan.id;
+                return (
+                  <Pressable
+                    key={plan.id}
+                    style={s.cabCard}
+                    onPress={() => setExpandedPlanId(expanded ? null : plan.id)}
+                  >
+                    {/* Header — always visible, tap to expand */}
+                    <View style={s.cabHeader}>
+                      <View style={s.cabInfo}>
+                        <Text style={s.cabName}>{plan.name}</Text>
+                        <Text style={s.cabMeta}>
+                          {formatMg(plan.targetDoseMg)} · every {plan.intervalDays} day
+                          {plan.intervalDays === 1 ? "" : "s"}
+                        </Text>
+                      </View>
+                      <View style={s.cabRight}>
+                        <View style={[s.badge, plan.reminderEnabled && s.badgeActive]}>
+                          <Text style={[s.badgeText, plan.reminderEnabled && s.badgeTextActive]}>
+                            {plan.reminderEnabled ? "Active" : "Off"}
+                          </Text>
+                        </View>
+                        <Text style={s.chevron}>{expanded ? "▲" : "▼"}</Text>
+                      </View>
+                    </View>
+
+                    {/* Body — only shown when expanded */}
+                    {expanded && (
+                      <View style={s.cabBody}>
+                        <DetailRow label="Vial strength"  value={formatMg(plan.vialMg)} />
+                        <DetailRow label="BAC water"      value={formatMl(plan.selectedWaterMl)} />
+                        <DetailRow label="Concentration"  value={`${formatMg(plan.concentrationMgPerMl)}/mL`} />
+                        <DetailRow label="Draw amount"    value={formatMl(plan.selectedDrawMl)} />
+                        <DetailRow
+                          label="Schedule"
+                          value={`Every ${plan.intervalDays} day${plan.intervalDays === 1 ? "" : "s"} at ${fmtTime(plan.reminderTimeIso)}`}
+                          last
+                        />
+                        <View style={s.cabActions}>
+                          <Pressable
+                            style={[s.cabBtn, plan.reminderEnabled ? s.cabBtnWarn : s.cabBtnPrimary]}
+                            onPress={() => toggleReminder(plan)}
+                          >
+                            <Text
+                              style={[
+                                s.cabBtnText,
+                                plan.reminderEnabled ? s.cabBtnTextWarn : s.cabBtnTextPrimary,
+                              ]}
+                            >
+                              {plan.reminderEnabled ? "Pause Reminders" : "Enable Reminders"}
+                            </Text>
+                          </Pressable>
+                          <Pressable style={s.cabBtnDanger} onPress={() => deletePlan(plan)}>
+                            <Text style={s.cabBtnTextDanger}>Delete</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    )}
+                  </Pressable>
+                );
+              })
+            )}
+
+            <View style={{ height: 16 }} />
+          </ScrollView>
+        )}
       </View>
 
-      {showTimePicker ? (
+      {/* ── BOTTOM TAB BAR ────────────────────────────────────────────────── */}
+      <View style={s.tabBar}>
+        <TabBtn
+          icon="+"
+          label="Add Peptide"
+          active={activeTab === "add"}
+          onPress={() => setActiveTab("add")}
+        />
+        <TabBtn
+          icon="◷"
+          label="Daily Schedule"
+          active={activeTab === "schedule"}
+          onPress={() => setActiveTab("schedule")}
+        />
+        <TabBtn
+          icon="▤"
+          label="Cabinet"
+          active={activeTab === "cabinet"}
+          onPress={() => setActiveTab("cabinet")}
+        />
+      </View>
+
+      {showTimePicker && (
         <DateTimePicker
           value={reminderTime}
           mode="time"
@@ -454,407 +611,290 @@ export default function App() {
           }}
           onDismiss={() => setShowTimePicker(false)}
         />
-      ) : null}
+      )}
     </SafeAreaView>
   );
 }
 
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
 type FieldProps = {
   label: string;
   value: string;
-  onChangeText: (value: string) => void;
+  onChangeText: (v: string) => void;
   placeholder: string;
   suffix?: string;
   keyboardType?: "default" | "decimal-pad";
 };
 
-function Field({ label, value, onChangeText, placeholder, suffix, keyboardType = "decimal-pad" }: FieldProps) {
+function Field({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  suffix,
+  keyboardType = "decimal-pad",
+}: FieldProps) {
   return (
-    <View style={styles.fieldBlock}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      <View style={styles.inputShell}>
+    <View style={s.fieldBlock}>
+      <Text style={s.fieldLabel}>{label}</Text>
+      <View style={s.inputShell}>
         <TextInput
-          style={styles.input}
+          style={s.input}
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
-          placeholderTextColor="#94a3b8"
+          placeholderTextColor={C.textMuted}
           keyboardType={keyboardType}
         />
-        {suffix ? <Text style={styles.inputSuffix}>{suffix}</Text> : null}
+        {suffix ? <Text style={s.inputSuffix}>{suffix}</Text> : null}
       </View>
     </View>
   );
 }
 
-type ActionButtonProps = {
+function DetailRow({
+  label,
+  value,
+  last = false,
+}: {
   label: string;
-  onPress: () => void;
-  destructive?: boolean;
-};
-
-function ActionButton({ label, onPress, destructive = false }: ActionButtonProps) {
+  value: string;
+  last?: boolean;
+}) {
   return (
-    <Pressable onPress={onPress} style={[styles.actionButton, destructive && styles.actionButtonDestructive]}>
-      <Text style={[styles.actionButtonText, destructive && styles.actionButtonTextDestructive]}>{label}</Text>
+    <View style={[s.detailRow, last && { borderBottomWidth: 0 }]}>
+      <Text style={s.detailLabel}>{label}</Text>
+      <Text style={s.detailValue}>{value}</Text>
+    </View>
+  );
+}
+
+function TabBtn({
+  icon,
+  label,
+  active,
+  onPress,
+}: {
+  icon: string;
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={s.tabBtn} onPress={onPress}>
+      <Text style={[s.tabIcon, active && s.tabIconActive]}>{icon}</Text>
+      <Text style={[s.tabLabel, active && s.tabLabelActive]}>{label}</Text>
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#f6f1e8",
-  },
-  scrollContent: {
-    paddingHorizontal: 18,
-    paddingTop: 14,
-    paddingBottom: 20,
-    gap: 16,
-  },
-  hero: {
-    backgroundColor: "#103f3a",
-    borderRadius: 28,
-    padding: 22,
-    overflow: "hidden",
-  },
-  heroBadge: {
-    alignSelf: "flex-start",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: "#d2efe7",
-    marginBottom: 14,
-  },
-  heroBadgeText: {
-    color: "#103f3a",
-    fontSize: 12,
-    fontWeight: "700",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-  },
-  heroTitle: {
-    color: "#f8fafc",
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: "800",
-    marginBottom: 10,
-  },
-  heroSubtitle: {
-    color: "#d7e4df",
-    fontSize: 15,
-    lineHeight: 22,
-  },
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const s = StyleSheet.create({
+  root: { flex: 1, backgroundColor: C.bg },
+  body: { flex: 1 },
+  scroll: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 16, gap: 16 },
+
+  pageHead:  { paddingTop: 8, paddingBottom: 4 },
+  pageTitle: { fontSize: 30, fontWeight: "800", color: C.text, letterSpacing: -0.5 },
+  pageSub:   { fontSize: 15, color: C.textSub, marginTop: 4 },
+
   card: {
-    backgroundColor: "#fffdfa",
-    borderRadius: 24,
+    backgroundColor: C.card,
+    borderRadius: 20,
     padding: 18,
     gap: 14,
     borderWidth: 1,
-    borderColor: "#efe4d6",
+    borderColor: C.border,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  cardTitle: {
-    color: "#172554",
-    fontSize: 20,
+  stepBadge: {
+    fontSize: 11,
     fontWeight: "800",
+    letterSpacing: 1.2,
+    color: C.primaryMid,
+    textTransform: "uppercase",
   },
-  cardSubtitle: {
-    color: "#475569",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  sectionRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  sectionMeta: {
-    color: "#0f766e",
-    fontWeight: "700",
-  },
-  inputGrid: {
-    gap: 12,
-  },
-  fieldBlock: {
-    gap: 7,
-  },
-  fieldLabel: {
-    color: "#334155",
-    fontSize: 13,
-    fontWeight: "700",
-  },
+  cardTitle: { fontSize: 20, fontWeight: "800", color: C.text, marginTop: -4 },
+  cardSub:   { fontSize: 14, color: C.textSub, lineHeight: 20, marginTop: -8 },
+
+  fieldBlock:  { gap: 6 },
+  fieldLabel:  { fontSize: 13, fontWeight: "700", color: C.text },
   inputShell: {
-    minHeight: 54,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#dbe1ea",
-    backgroundColor: "#ffffff",
+    height: 52,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    backgroundColor: "#FAFCFB",
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
   },
-  input: {
-    flex: 1,
-    color: "#0f172a",
-    fontSize: 16,
-    fontWeight: "600",
+  input:       { flex: 1, fontSize: 16, fontWeight: "600", color: C.text },
+  inputSuffix: { fontSize: 13, fontWeight: "700", color: C.textMuted },
+
+  rowFields: { flexDirection: "row", gap: 12 },
+  rowHalf:   { flex: 1, gap: 6 },
+
+  timeBtn: {
+    height: 52,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    backgroundColor: "#FAFCFB",
+    justifyContent: "center",
+    paddingHorizontal: 14,
   },
-  inputSuffix: {
-    color: "#64748b",
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  highlightPanel: {
-    backgroundColor: "#f0fdf4",
-    borderRadius: 22,
+  timeBtnText: { fontSize: 16, fontWeight: "600", color: C.text },
+
+  highlight: {
+    backgroundColor: C.primaryLight,
+    borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: "#bbf7d0",
-    gap: 6,
+    borderColor: "#B7DFC9",
+    gap: 4,
   },
   highlightLabel: {
-    color: "#15803d",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
+    color: C.primaryMid,
     textTransform: "uppercase",
     letterSpacing: 0.8,
   },
-  highlightValue: {
-    color: "#14532d",
-    fontSize: 28,
-    fontWeight: "900",
-  },
-  highlightBody: {
-    color: "#166534",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  optionCard: {
-    borderRadius: 20,
-    padding: 16,
-    backgroundColor: "#f8fafc",
-    borderWidth: 1,
-    borderColor: "#dbe7f3",
-    gap: 6,
-  },
-  optionCardSelected: {
-    backgroundColor: "#eff6ff",
-    borderColor: "#60a5fa",
-  },
-  optionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-  },
-  optionTag: {
-    color: "#1d4ed8",
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    letterSpacing: 0.7,
-  },
-  optionDraw: {
-    color: "#0f172a",
-    fontSize: 18,
-    fontWeight: "800",
-  },
-  optionText: {
-    color: "#475569",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  emptyState: {
-    borderRadius: 20,
-    padding: 16,
-    backgroundColor: "#f8fafc",
-    borderWidth: 1,
-    borderStyle: "dashed",
-    borderColor: "#cbd5e1",
-    gap: 6,
-  },
-  emptyTitle: {
-    color: "#1e293b",
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  emptyBody: {
-    color: "#64748b",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  inlineRow: {
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "flex-end",
-  },
-  inlineField: {
-    flex: 1,
-  },
-  timeField: {
-    flex: 1,
-    gap: 7,
-  },
-  timeButton: {
-    minHeight: 54,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#dbe1ea",
-    justifyContent: "center",
-    paddingHorizontal: 16,
-    backgroundColor: "#ffffff",
-  },
-  timeButtonLabel: {
-    color: "#0f172a",
-    fontSize: 16,
-    fontWeight: "700",
-  },
+  highlightValue: { fontSize: 30, fontWeight: "900", color: C.primary },
+  highlightBody:  { fontSize: 14, color: "#2D6A4F", lineHeight: 20 },
+
+  optCard:    { borderRadius: 16, padding: 14, backgroundColor: "#F8FAFC", borderWidth: 1.5, borderColor: C.border, gap: 4 },
+  optCardSel: { backgroundColor: C.primaryLight, borderColor: C.accent },
+  optRow:     { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  optTag:     { fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.7, color: C.textSub },
+  optTagSel:  { color: C.primary },
+  optDraw:    { fontSize: 17, fontWeight: "800", color: C.text },
+  optText:    { fontSize: 13, color: C.textSub, lineHeight: 18 },
+
   switchRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 16,
-    borderRadius: 20,
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#F8FAFC",
+    borderRadius: 16,
     padding: 14,
-  },
-  switchTitle: {
-    color: "#0f172a",
-    fontSize: 15,
-    fontWeight: "800",
-  },
-  switchSubtitle: {
-    color: "#64748b",
-    fontSize: 13,
-    marginTop: 2,
-  },
-  primaryButton: {
-    minHeight: 54,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#0f766e",
-  },
-  primaryButtonText: {
-    color: "#f8fafc",
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  savedCard: {
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#ebe2d5",
-    backgroundColor: "#fffcf8",
-    gap: 8,
-  },
-  savedHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
     gap: 12,
   },
-  savedTitle: {
-    color: "#0f172a",
-    fontSize: 17,
-    fontWeight: "800",
-  },
-  savedMeta: {
-    color: "#475569",
-    fontSize: 13,
-    marginTop: 2,
-  },
-  savedStatus: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    backgroundColor: "#e2e8f0",
-  },
-  savedStatusActive: {
-    backgroundColor: "#ccfbf1",
-  },
-  savedStatusText: {
-    color: "#475569",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  savedStatusTextActive: {
-    color: "#0f766e",
-  },
-  savedDetail: {
-    color: "#475569",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  savedActions: {
+  switchInfo:  { flex: 1 },
+  switchTitle: { fontSize: 15, fontWeight: "700", color: C.text },
+  switchSub:   { fontSize: 13, color: C.textSub, marginTop: 2 },
+
+  primaryBtn:         { height: 54, borderRadius: 16, backgroundColor: C.primary, alignItems: "center", justifyContent: "center" },
+  primaryBtnDisabled: { opacity: 0.6 },
+  primaryBtnText:     { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
+  ghostBtn:           { height: 44, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  ghostBtnText:       { color: C.textSub, fontSize: 14, fontWeight: "700" },
+
+  empty:      { borderRadius: 16, padding: 20, backgroundColor: "#F8FAFC", borderWidth: 1, borderStyle: "dashed", borderColor: C.border, alignItems: "center", gap: 6 },
+  emptyTitle: { fontSize: 16, fontWeight: "800", color: C.text },
+  emptySub:   { fontSize: 14, color: C.textSub, textAlign: "center", lineHeight: 20 },
+
+  schedSection:      { gap: 10 },
+  schedSectionTitle: { fontSize: 17, fontWeight: "800", color: C.text },
+  schedItem: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginTop: 4,
-  },
-  actionButton: {
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: "#ecfdf5",
-  },
-  actionButtonDestructive: {
-    backgroundColor: "#fff1f2",
-  },
-  actionButtonText: {
-    color: "#0f766e",
-    fontWeight: "800",
-    fontSize: 13,
-  },
-  actionButtonTextDestructive: {
-    color: "#be123c",
-  },
-  bottomAdSpacer: {
-    height: 120,
-  },
-  bottomAdShell: {
-    paddingHorizontal: 18,
-    paddingBottom: 14,
-    paddingTop: 8,
-    backgroundColor: "rgba(246, 241, 232, 0.96)",
-  },
-  bottomAdCard: {
-    borderRadius: 22,
-    backgroundColor: "#1e293b",
-    padding: 16,
+    backgroundColor: C.card,
+    borderRadius: 16,
+    padding: 14,
+    gap: 12,
     borderWidth: 1,
-    borderColor: "#334155",
-    gap: 6,
+    borderColor: C.border,
+    alignItems: "flex-start",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
   },
-  bottomAdEyebrow: {
-    color: "#7dd3fc",
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
+  schedItemPast:     { opacity: 0.55 },
+  schedLeft:         { alignItems: "center", gap: 5, width: 52 },
+  dot:               { width: 10, height: 10, borderRadius: 5, marginTop: 2 },
+  dotToday:          { backgroundColor: C.primary },
+  dotPast:           { backgroundColor: C.textMuted },
+  dotUpcoming:       { backgroundColor: C.accent },
+  schedTime:         { fontSize: 12, fontWeight: "700", color: C.primary, textAlign: "center" },
+  schedTimePast:     { color: C.textMuted },
+  schedTimeUpcoming: { fontSize: 11, fontWeight: "700", color: C.accent, textAlign: "center" },
+  schedRight:        { flex: 1, gap: 2 },
+  schedName:         { fontSize: 15, fontWeight: "800", color: C.text },
+  schedNamePast:     { color: C.textSub },
+  schedDose:         { fontSize: 13, color: C.textSub },
+  schedDoneTag:      { fontSize: 11, fontWeight: "700", color: C.accent, marginTop: 2 },
+
+  cabCard: {
+    backgroundColor: C.card,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: C.border,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  bottomAdTitle: {
-    color: "#f8fafc",
-    fontSize: 18,
-    fontWeight: "800",
-    lineHeight: 23,
-  },
-  bottomAdBody: {
-    color: "#cbd5e1",
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  bottomAdButton: {
-    alignSelf: "flex-start",
-    marginTop: 6,
-    borderRadius: 999,
-    paddingHorizontal: 14,
+  cabHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, gap: 12 },
+  cabInfo:   { flex: 1 },
+  cabName:   { fontSize: 17, fontWeight: "800", color: C.text },
+  cabMeta:   { fontSize: 13, color: C.textSub, marginTop: 2 },
+  cabRight:  { flexDirection: "row", alignItems: "center", gap: 10 },
+
+  badge:           { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: "#F1F5F9" },
+  badgeActive:     { backgroundColor: C.primaryLight },
+  badgeText:       { fontSize: 12, fontWeight: "700", color: C.textSub },
+  badgeTextActive: { color: C.primary },
+  chevron:         { fontSize: 12, color: C.textMuted },
+
+  cabBody: { borderTopWidth: 1, borderTopColor: C.border, paddingHorizontal: 16, paddingBottom: 16 },
+  detailRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     paddingVertical: 10,
-    backgroundColor: "#22c55e",
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
   },
-  bottomAdButtonText: {
-    color: "#052e16",
-    fontSize: 13,
-    fontWeight: "800",
+  detailLabel: { fontSize: 14, color: C.textSub },
+  detailValue: { fontSize: 14, fontWeight: "700", color: C.text },
+
+  cabActions:       { flexDirection: "row", gap: 10, marginTop: 14 },
+  cabBtn:           { flex: 1, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1 },
+  cabBtnPrimary:    { backgroundColor: C.primaryLight, borderColor: "#B7DFC9" },
+  cabBtnWarn:       { backgroundColor: C.warnLight, borderColor: "#FDE68A" },
+  cabBtnText:       { fontSize: 13, fontWeight: "700" },
+  cabBtnTextPrimary: { color: C.primary },
+  cabBtnTextWarn:    { color: C.warn },
+  cabBtnDanger:      { height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: C.dangerLight, paddingHorizontal: 16 },
+  cabBtnTextDanger:  { fontSize: 13, fontWeight: "700", color: C.danger },
+
+  tabBar: {
+    flexDirection: "row",
+    backgroundColor: C.card,
+    borderTopWidth: 1,
+    borderTopColor: C.border,
+    paddingBottom: Platform.OS === "ios" ? 20 : 8,
+    paddingTop: 8,
+    paddingHorizontal: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 8,
   },
+  tabBtn:        { flex: 1, alignItems: "center", justifyContent: "center", gap: 3, paddingVertical: 4 },
+  tabIcon:       { fontSize: 22, color: C.textMuted },
+  tabIconActive: { color: C.primary },
+  tabLabel:       { fontSize: 10, fontWeight: "700", color: C.textMuted, textAlign: "center" },
+  tabLabelActive: { color: C.primary },
 });
