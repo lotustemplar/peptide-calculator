@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -10,6 +11,13 @@ import {
   TextInput,
   View,
 } from "react-native";
+
+const IMGS = {
+  vial:     require("./assets/img-vial.png"),
+  dose:     require("./assets/img-dose.png"),
+  syringe:  require("./assets/img-syringe.png"),
+  calendar: require("./assets/img-calendar.png"),
+};
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -312,9 +320,28 @@ function AppContent() {
               <View style={s.card}>
                 <Text style={s.stepBadge}>STEP 1 OF 3</Text>
                 <Text style={s.cardTitle}>Peptide Details</Text>
-                <Field label="Milligrams in vial" value={vialMg} onChangeText={setVialMg} placeholder="10" suffix="mg" />
-                <Field label="Syringe capacity" value={syringeMaxMl} onChangeText={setSyringeMaxMl} placeholder="1" suffix="mL" />
-                <Field label="Target dose" value={targetDoseMg} onChangeText={setTargetDoseMg} placeholder="2" suffix="mg" />
+
+                <View style={s.imgFieldRow}>
+                  <Image source={IMGS.vial} style={s.stepImg} resizeMode="contain" />
+                  <View style={s.imgFieldBody}>
+                    <Field label="Milligrams in vial" value={vialMg} onChangeText={setVialMg} placeholder="10" suffix="mg" />
+                  </View>
+                </View>
+
+                <View style={s.imgFieldRow}>
+                  <Image source={IMGS.syringe} style={s.stepImg} resizeMode="contain" />
+                  <View style={s.imgFieldBody}>
+                    <Field label="Syringe max capacity" value={syringeMaxMl} onChangeText={setSyringeMaxMl} placeholder="1" suffix="mL" />
+                  </View>
+                </View>
+
+                <View style={s.imgFieldRow}>
+                  <Image source={IMGS.dose} style={s.stepImg} resizeMode="contain" />
+                  <View style={s.imgFieldBody}>
+                    <Field label="Target dose" value={targetDoseMg} onChangeText={setTargetDoseMg} placeholder="2" suffix="mg" />
+                  </View>
+                </View>
+
                 {!calcDone && (
                   <Pressable style={s.primaryBtn} onPress={handleCalculate}>
                     <Text style={s.primaryBtnText}>Calculate Options</Text>
@@ -374,16 +401,18 @@ function AppContent() {
                     keyboardType="default"
                   />
 
-                  <View style={s.rowFields}>
-                    <View style={s.rowHalf}>
+                  <View style={s.imgFieldRow}>
+                    <Image source={IMGS.calendar} style={s.stepImg} resizeMode="contain" />
+                    <View style={s.imgFieldBody}>
                       <Field label="Dose every" value={intervalDays} onChangeText={setIntervalDays} placeholder="3" suffix="days" />
                     </View>
-                    <View style={s.rowHalf}>
-                      <Text style={s.fieldLabel}>Reminder time</Text>
-                      <Pressable style={s.timeBtn} onPress={openTimePicker}>
-                        <Text style={s.timeBtnText}>{fmtTime(reminderTime.toISOString())}</Text>
-                      </Pressable>
-                    </View>
+                  </View>
+
+                  <View style={s.fieldBlock}>
+                    <Text style={s.fieldLabel}>Reminder time</Text>
+                    <Pressable style={s.timeBtn} onPress={openTimePicker}>
+                      <Text style={s.timeBtnText}>{fmtTime(reminderTime.toISOString())}</Text>
+                    </Pressable>
                   </View>
 
                   <View style={s.switchRow}>
@@ -739,6 +768,11 @@ const s = StyleSheet.create({
   stepBadge: { fontSize: 11, fontWeight: "800", letterSpacing: 1.2, color: C.primaryMid, textTransform: "uppercase" },
   cardTitle: { fontSize: 20, fontWeight: "800", color: C.text, marginTop: -4 },
   cardSub:   { fontSize: 14, color: C.textSub, lineHeight: 20, marginTop: -8 },
+
+  // Step illustrations
+  imgFieldRow:  { flexDirection: "row", alignItems: "center", gap: 12 },
+  imgFieldBody: { flex: 1 },
+  stepImg:      { width: 72, height: 72 },
 
   // Form fields
   fieldBlock:  { gap: 6 },
