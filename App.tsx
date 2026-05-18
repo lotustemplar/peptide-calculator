@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -11,13 +10,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-
-const IMGS = {
-  vial:     require("./assets/img-vial.png"),
-  dose:     require("./assets/img-dose.png"),
-  syringe:  require("./assets/img-syringe.png"),
-  calendar: require("./assets/img-calendar.png"),
-};
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -322,21 +314,21 @@ function AppContent() {
                 <Text style={s.cardTitle}>Peptide Details</Text>
 
                 <View style={s.imgFieldRow}>
-                  <Image source={IMGS.vial} style={s.stepImg} resizeMode="contain" />
+                  <IlluVial />
                   <View style={s.imgFieldBody}>
                     <Field label="Milligrams in vial" value={vialMg} onChangeText={setVialMg} placeholder="10" suffix="mg" />
                   </View>
                 </View>
 
                 <View style={s.imgFieldRow}>
-                  <Image source={IMGS.syringe} style={s.stepImg} resizeMode="contain" />
+                  <IlluSyringe full />
                   <View style={s.imgFieldBody}>
                     <Field label="Syringe max capacity" value={syringeMaxMl} onChangeText={setSyringeMaxMl} placeholder="1" suffix="mL" />
                   </View>
                 </View>
 
                 <View style={s.imgFieldRow}>
-                  <Image source={IMGS.dose} style={s.stepImg} resizeMode="contain" />
+                  <IlluSyringe />
                   <View style={s.imgFieldBody}>
                     <Field label="Target dose" value={targetDoseMg} onChangeText={setTargetDoseMg} placeholder="2" suffix="mg" />
                   </View>
@@ -402,7 +394,7 @@ function AppContent() {
                   />
 
                   <View style={s.imgFieldRow}>
-                    <Image source={IMGS.calendar} style={s.stepImg} resizeMode="contain" />
+                    <IlluCalendar />
                     <View style={s.imgFieldBody}>
                       <Field label="Dose every" value={intervalDays} onChangeText={setIntervalDays} placeholder="3" suffix="days" />
                     </View>
@@ -676,6 +668,125 @@ function AppContent() {
     </View>
   );
 }
+
+// ─── Step Illustrations ───────────────────────────────────────────────────────
+
+/** Glass vial — represents total mg/IU inside the vial */
+function IlluVial() {
+  return (
+    <View style={ill.vialWrap}>
+      {/* metal cap */}
+      <View style={ill.vialCap} />
+      {/* narrow neck */}
+      <View style={ill.vialNeck} />
+      {/* glass body */}
+      <View style={ill.vialBody}>
+        {/* liquid fill */}
+        <View style={ill.vialFill} />
+        <Text style={ill.vialLabel}>mg</Text>
+      </View>
+      <Text style={ill.illuCaption}>Total in vial</Text>
+    </View>
+  );
+}
+
+/** Syringe — full = shows max capacity, partial = shows a single dose */
+function IlluSyringe({ full = false }: { full?: boolean }) {
+  return (
+    <View style={ill.syrWrap}>
+      {/* vertical syringe */}
+      <View style={ill.syrNeedleTip} />
+      <View style={ill.syrNeedle} />
+      <View style={ill.syrBarrel}>
+        {/* fill level */}
+        <View style={[ill.syrFill, { height: full ? "90%" : "38%" }]} />
+        {/* tick marks */}
+        {[1, 2, 3].map((i) => (
+          <View key={i} style={[ill.syrTick, { top: `${i * 22}%` as any }]} />
+        ))}
+        <Text style={ill.syrLabel}>{full ? "max" : "dose"}</Text>
+      </View>
+      <View style={ill.syrPlunger} />
+      <Text style={ill.illuCaption}>{full ? "Syringe size" : "Your dose"}</Text>
+    </View>
+  );
+}
+
+/** Calendar grid — represents the dosing interval (every X days) */
+function IlluCalendar() {
+  const doseDays = [1, 4, 7, 10, 13];
+  const cells = Array.from({ length: 14 }, (_, i) => i + 1);
+  return (
+    <View style={ill.calWrap}>
+      <View style={ill.calHeader}>
+        <Text style={ill.calHeaderText}>DOSE DAYS</Text>
+      </View>
+      <View style={ill.calGrid}>
+        {cells.map((d) => {
+          const on = doseDays.includes(d);
+          return (
+            <View key={d} style={[ill.calCell, on && ill.calCellOn]}>
+              {on && <View style={ill.calDot} />}
+            </View>
+          );
+        })}
+      </View>
+      <Text style={ill.illuCaption}>Dose schedule</Text>
+    </View>
+  );
+}
+
+const ill = StyleSheet.create({
+  // ── Shared caption
+  illuCaption: { fontSize: 9, fontWeight: "700", color: "#64748B", textAlign: "center", marginTop: 4 },
+
+  // ── Vial
+  vialWrap:  { width: 64, alignItems: "center" },
+  vialCap:   { width: 26, height: 9, backgroundColor: "#94A3B8", borderRadius: 3 },
+  vialNeck:  { width: 14, height: 6, backgroundColor: "#CBD5E1" },
+  vialBody: {
+    width: 32, height: 42,
+    borderWidth: 2, borderColor: "#3B82F6",
+    borderTopLeftRadius: 2, borderTopRightRadius: 2,
+    borderBottomLeftRadius: 6, borderBottomRightRadius: 6,
+    backgroundColor: "rgba(239,246,255,0.7)",
+    overflow: "hidden",
+    alignItems: "center", justifyContent: "center",
+  },
+  vialFill:  { position: "absolute", bottom: 0, left: 0, right: 0, height: 24, backgroundColor: "rgba(147,197,253,0.55)" },
+  vialLabel: { fontSize: 13, fontWeight: "900", color: "#1D4ED8", zIndex: 1 },
+
+  // ── Syringe (vertical)
+  syrWrap:      { width: 64, alignItems: "center" },
+  syrNeedleTip: { width: 0, height: 0, borderLeftWidth: 7, borderRightWidth: 7, borderBottomWidth: 10, borderStyle: "solid", borderLeftColor: "transparent", borderRightColor: "transparent", borderBottomColor: "#94A3B8" },
+  syrNeedle:    { width: 4, height: 8, backgroundColor: "#94A3B8" },
+  syrBarrel: {
+    width: 28, height: 42,
+    borderWidth: 2, borderColor: "#3B82F6",
+    backgroundColor: "rgba(239,246,255,0.7)",
+    overflow: "hidden",
+    alignItems: "center", justifyContent: "flex-end",
+  },
+  syrFill:   { position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(147,197,253,0.6)" },
+  syrTick:   { position: "absolute", left: 0, right: 0, height: 1, backgroundColor: "rgba(59,130,246,0.4)" },
+  syrLabel:  { fontSize: 8, fontWeight: "800", color: "#1E40AF", marginBottom: 3, zIndex: 1 },
+  syrPlunger: { width: 36, height: 8, backgroundColor: "#CBD5E1", borderRadius: 2, marginTop: 1 },
+
+  // ── Calendar
+  calWrap:       { width: 64, alignItems: "center" },
+  calHeader:     { width: "100%", height: 14, backgroundColor: "#1B6B4A", borderTopLeftRadius: 5, borderTopRightRadius: 5, alignItems: "center", justifyContent: "center" },
+  calHeaderText: { fontSize: 7, fontWeight: "800", color: "#FFFFFF", letterSpacing: 0.5 },
+  calGrid: {
+    width: "100%",
+    flexDirection: "row", flexWrap: "wrap",
+    borderWidth: 1, borderTopWidth: 0, borderColor: "#CBD5E1",
+    borderBottomLeftRadius: 5, borderBottomRightRadius: 5,
+    overflow: "hidden",
+  },
+  calCell:    { width: "14.28%", aspectRatio: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#F8FAFC" },
+  calCellOn:  { backgroundColor: "#E8F5EE" },
+  calDot:     { width: 6, height: 6, borderRadius: 3, backgroundColor: "#1B6B4A" },
+});
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
