@@ -21,4 +21,5 @@ export type SavedPlan = {
   reminderEnabled: boolean;
   notificationIds: string[];
   createdAt: string;
+  startDateIso?: string;
 };

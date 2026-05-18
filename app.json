@@ -1,11 +1,22 @@
 {
   "expo": {
-    "name": "Peptide Calculator",
+    "name": "Fitgen Peptide Calculator",
     "slug": "peptide-calculator",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "android": {
+      "package": "com.peptidecalculator.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#1B6B4A"
+      },
+      "permissions": [
+        "SCHEDULE_EXACT_ALARM"
+      ]
+    },
     "plugins": [
       [
         "expo-notifications",
@@ -14,11 +25,10 @@
         }
       ]
     ],
-    "android": {
-      "package": "com.peptidecalculator.app",
-      "permissions": [
-        "SCHEDULE_EXACT_ALARM"
-      ]
+    "extra": {
+      "eas": {
+        "projectId": "5c98baa4-ac40-4204-a2fb-f695c287caed"
+      }
     }
   }
 }

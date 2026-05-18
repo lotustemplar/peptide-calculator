@@ -60,12 +60,15 @@ const fmtTime = (iso: string) =>
 const fmtDateLong = (d: Date) =>
   d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
 
+const fmtDateShort = (d: Date) =>
+  d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+
 const isDoseDay = (plan: SavedPlan, date: Date): boolean => {
-  const created = new Date(plan.createdAt);
-  created.setHours(0, 0, 0, 0);
+  const base = new Date(plan.startDateIso ?? plan.createdAt);
+  base.setHours(0, 0, 0, 0);
   const target = new Date(date);
   target.setHours(0, 0, 0, 0);
-  const diff = Math.round((target.getTime() - created.getTime()) / 86400000);
+  const diff = Math.round((target.getTime() - base.getTime()) / 86400000);
   return diff >= 0 && diff % plan.intervalDays === 0;
 };
 
@@ -97,6 +100,12 @@ function AppContent() {
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [reminderTime, setReminderTime] = useState(defaultReminderTime);
   const [showTimePicker, setShowTimePicker] = useState(false);
+
+  // Date picker
+  const [startDate, setStartDate] = useState<Date>(() => { const d = new Date(); d.setHours(0,0,0,0); return d; });
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [datePickerTarget, setDatePickerTarget] = useState<"add" | "edit">("add");
+  const [editStartDate, setEditStartDate] = useState<Date>(() => { const d = new Date(); d.setHours(0,0,0,0); return d; });
 
   // Time picker sub-state (shared between add + edit flows)
   const [pickerHour, setPickerHour] = useState(8);
@@ -163,6 +172,7 @@ function AppContent() {
     setPlanName(""); setIntervalDays("3");
     setReminderEnabled(true); setReminderTime(defaultReminderTime());
     setCalcDone(false); setSelectedOptionId("");
+    const today = new Date(); today.setHours(0,0,0,0); setStartDate(today);
   };
 
   const handleCalculate = () => {
@@ -193,6 +203,7 @@ function AppContent() {
         reminderEnabled,
         notificationIds: [],
         createdAt: new Date().toISOString(),
+        startDateIso: startDate.toISOString(),
       };
 
       if (reminderEnabled) {
@@ -259,6 +270,8 @@ function AppContent() {
     setEditIntervalDays(String(plan.intervalDays));
     setEditReminderTime(new Date(plan.reminderTimeIso));
     setEditReminderEnabled(plan.reminderEnabled);
+    const sd = new Date(plan.startDateIso ?? plan.createdAt); sd.setHours(0,0,0,0);
+    setEditStartDate(sd);
     setEditingPlan(plan);
   };
 
@@ -296,6 +309,7 @@ function AppContent() {
         reminderTimeIso: editReminderTime.toISOString(),
         reminderEnabled: editReminderEnabled,
         notificationIds: [],
+        startDateIso: editStartDate.toISOString(),
       };
 
       if (editReminderEnabled) {
@@ -497,6 +511,13 @@ function AppContent() {
                     <View style={s.imgFieldBody}>
                       <Field label="Dose every" value={intervalDays} onChangeText={setIntervalDays} placeholder="3" suffix="days" />
                     </View>
+                  </View>
+
+                  <View style={s.fieldBlock}>
+                    <Text style={s.fieldLabel}>Start date</Text>
+                    <Pressable style={s.timeBtn} onPress={() => { setDatePickerTarget("add"); setShowDatePicker(true); }}>
+                      <Text style={s.timeBtnText}>{fmtDateShort(startDate)}</Text>
+                    </Pressable>
                   </View>
 
                   <View style={s.fieldBlock}>
@@ -735,6 +756,13 @@ function AppContent() {
               <Field label="Dose every" value={editIntervalDays} onChangeText={setEditIntervalDays} placeholder="3" suffix="days" />
 
               <View style={s.fieldBlock}>
+                <Text style={s.fieldLabel}>Start date</Text>
+                <Pressable style={s.timeBtn} onPress={() => { setDatePickerTarget("edit"); setShowDatePicker(true); }}>
+                  <Text style={s.timeBtnText}>{fmtDateShort(editStartDate)}</Text>
+                </Pressable>
+              </View>
+
+              <View style={s.fieldBlock}>
                 <Text style={s.fieldLabel}>Reminder time</Text>
                 <Pressable style={s.timeBtn} onPress={openEditTimePicker}>
                   <Text style={s.timeBtnText}>{fmtTime(editReminderTime.toISOString())}</Text>
@@ -768,6 +796,14 @@ function AppContent() {
           </View>
         </View>
       </Modal>
+
+      {/* ── DATE PICKER MODAL ────────────────────────────────────────────── */}
+      <DatePickerModal
+        visible={showDatePicker}
+        selected={datePickerTarget === "add" ? startDate : editStartDate}
+        onSelect={(d) => datePickerTarget === "add" ? setStartDate(d) : setEditStartDate(d)}
+        onClose={() => setShowDatePicker(false)}
+      />
 
       {/* ── TIME PICKER MODAL ─────────────────────────────────────────────── */}
       <Modal
@@ -840,6 +876,113 @@ function AppContent() {
     </View>
   );
 }
+
+// ─── Date Picker Modal ────────────────────────────────────────────────────────
+
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DAY_LABELS  = ["S","M","T","W","T","F","S"];
+
+function DatePickerModal({
+  visible, selected, onSelect, onClose,
+}: {
+  visible: boolean;
+  selected: Date;
+  onSelect: (d: Date) => void;
+  onClose: () => void;
+}) {
+  const [viewYear,  setViewYear]  = useState(selected.getFullYear());
+  const [viewMonth, setViewMonth] = useState(selected.getMonth());
+
+  useEffect(() => {
+    if (visible) { setViewYear(selected.getFullYear()); setViewMonth(selected.getMonth()); }
+  }, [visible]);
+
+  const prevMonth = () => {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear((y) => y - 1); }
+    else setViewMonth((m) => m - 1);
+  };
+  const nextMonth = () => {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear((y) => y + 1); }
+    else setViewMonth((m) => m + 1);
+  };
+
+  const firstDow    = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const today = new Date(); today.setHours(0,0,0,0);
+
+  const cells: (number | null)[] = [
+    ...Array(firstDow).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={s.modalOverlay} onPress={onClose}>
+        <Pressable style={s.timePickerBox} onPress={() => {}}>
+          <Text style={s.timePickerTitle}>Select Start Date</Text>
+
+          {/* Month / year navigation */}
+          <View style={dp.nav}>
+            <Pressable onPress={prevMonth} style={dp.navBtn}>
+              <Ionicons name="chevron-back" size={22} color={C.primary} />
+            </Pressable>
+            <Text style={dp.navLabel}>{MONTH_NAMES[viewMonth]} {viewYear}</Text>
+            <Pressable onPress={nextMonth} style={dp.navBtn}>
+              <Ionicons name="chevron-forward" size={22} color={C.primary} />
+            </Pressable>
+          </View>
+
+          {/* Day-of-week headers */}
+          <View style={dp.dowRow}>
+            {DAY_LABELS.map((l, i) => (
+              <Text key={i} style={dp.dowCell}>{l}</Text>
+            ))}
+          </View>
+
+          {/* Day cells */}
+          <View style={dp.grid}>
+            {cells.map((day, i) => {
+              if (!day) return <View key={`e${i}`} style={dp.cell} />;
+              const cellDate = new Date(viewYear, viewMonth, day);
+              cellDate.setHours(0,0,0,0);
+              const isSel    = selected.toDateString() === cellDate.toDateString();
+              const isToday  = today.toDateString() === cellDate.toDateString();
+              return (
+                <Pressable
+                  key={day}
+                  style={dp.cell}
+                  onPress={() => { onSelect(cellDate); onClose(); }}
+                >
+                  <View style={[dp.dayCircle, isSel && dp.dayCircleSel, isToday && !isSel && dp.dayCircleToday]}>
+                    <Text style={[dp.dayText, isSel && dp.dayTextSel, isToday && !isSel && dp.dayTextToday]}>
+                      {day}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+const dp = StyleSheet.create({
+  nav:           { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginVertical: 8 },
+  navBtn:        { width: 36, height: 36, borderRadius: 18, backgroundColor: C.primaryLight, alignItems: "center", justifyContent: "center" },
+  navLabel:      { fontSize: 16, fontWeight: "800", color: C.text },
+  dowRow:        { flexDirection: "row", marginBottom: 4 },
+  dowCell:       { flex: 1, textAlign: "center", fontSize: 11, fontWeight: "700", color: C.textMuted, paddingVertical: 4 },
+  grid:          { flexDirection: "row", flexWrap: "wrap" },
+  cell:          { width: "14.28%", aspectRatio: 1, alignItems: "center", justifyContent: "center" },
+  dayCircle:     { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+  dayCircleSel:  { backgroundColor: C.primary },
+  dayCircleToday:{ borderWidth: 1.5, borderColor: C.primary },
+  dayText:       { fontSize: 14, fontWeight: "500", color: C.text },
+  dayTextSel:    { color: "#FFFFFF", fontWeight: "800" },
+  dayTextToday:  { color: C.primary, fontWeight: "800" },
+});
 
 // ─── Step Illustrations ───────────────────────────────────────────────────────
 
