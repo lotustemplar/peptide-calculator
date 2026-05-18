@@ -98,16 +98,28 @@ function AppContent() {
   const [reminderTime, setReminderTime] = useState(defaultReminderTime);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
-  // Time picker sub-state
+  // Time picker sub-state (shared between add + edit flows)
   const [pickerHour, setPickerHour] = useState(8);
   const [pickerMinute, setPickerMinute] = useState(0);
   const [pickerAmPm, setPickerAmPm] = useState<"AM" | "PM">("AM");
+  const [timePickerTarget, setTimePickerTarget] = useState<"add" | "edit">("add");
 
   // Data
   const [plans, setPlans] = useState<SavedPlan[]>([]);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null);
+
+  // Edit plan modal
+  const [editingPlan, setEditingPlan] = useState<SavedPlan | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editVialMg, setEditVialMg] = useState("");
+  const [editSyringeMaxMl, setEditSyringeMaxMl] = useState("");
+  const [editTargetDoseMg, setEditTargetDoseMg] = useState("");
+  const [editIntervalDays, setEditIntervalDays] = useState("");
+  const [editReminderTime, setEditReminderTime] = useState(defaultReminderTime);
+  const [editReminderEnabled, setEditReminderEnabled] = useState(true);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   const parsedVialMg       = parsePositiveNumber(vialMg);
   const parsedSyringeMaxMl = parsePositiveNumber(syringeMaxMl);
@@ -239,27 +251,114 @@ function AppContent() {
     ]);
   };
 
+  const openEditPlan = (plan: SavedPlan) => {
+    setEditName(plan.name);
+    setEditVialMg(String(plan.vialMg));
+    setEditSyringeMaxMl(String(plan.syringeMaxMl));
+    setEditTargetDoseMg(String(plan.targetDoseMg));
+    setEditIntervalDays(String(plan.intervalDays));
+    setEditReminderTime(new Date(plan.reminderTimeIso));
+    setEditReminderEnabled(plan.reminderEnabled);
+    setEditingPlan(plan);
+  };
+
+  const saveEditedPlan = async () => {
+    if (!editingPlan) return;
+    const parsedVial     = parsePositiveNumber(editVialMg);
+    const parsedSyringe  = parsePositiveNumber(editSyringeMaxMl);
+    const parsedDose     = parsePositiveNumber(editTargetDoseMg);
+    const parsedInterval = Math.max(1, Math.round(parsePositiveNumber(editIntervalDays)));
+
+    if (!parsedVial || !parsedSyringe || !parsedDose)
+      return Alert.alert("Invalid values", "Enter valid numbers for all fields.");
+    if (parsedDose > parsedVial)
+      return Alert.alert("Dose too high", "Target dose cannot exceed vial milligrams.");
+
+    const newOptions = generateDoseOptions(parsedVial, parsedDose, parsedSyringe);
+    if (!newOptions.length)
+      return Alert.alert("No valid options", "Try a smaller dose or a larger syringe.");
+
+    setIsSavingEdit(true);
+    try {
+      await cancelReminderSeriesAsync(editingPlan.notificationIds);
+
+      const best = newOptions[0];
+      const updated: SavedPlan = {
+        ...editingPlan,
+        name: editName.trim() || editingPlan.name,
+        vialMg: parsedVial,
+        syringeMaxMl: parsedSyringe,
+        targetDoseMg: parsedDose,
+        selectedWaterMl: best.waterMl,
+        selectedDrawMl: best.drawMl,
+        concentrationMgPerMl: best.concentrationMgPerMl,
+        intervalDays: parsedInterval,
+        reminderTimeIso: editReminderTime.toISOString(),
+        reminderEnabled: editReminderEnabled,
+        notificationIds: [],
+      };
+
+      if (editReminderEnabled) {
+        const ok = await requestReminderPermissionsAsync();
+        if (ok) {
+          updated.notificationIds = await scheduleReminderSeriesAsync(updated);
+        } else {
+          updated.reminderEnabled = false;
+        }
+      }
+
+      const idx = plans.findIndex((p) => p.id === editingPlan.id);
+      const next = [...plans];
+      next[idx] = updated;
+      await persistPlans(next);
+      setEditingPlan(null);
+      Alert.alert("Saved!", "Your plan has been updated.");
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
   const openTimePicker = () => {
-    const h = reminderTime.getHours();
-    const m = reminderTime.getMinutes();
+    const src = reminderTime;
+    const h = src.getHours();
+    const m = src.getMinutes();
     const ampm: "AM" | "PM" = h >= 12 ? "PM" : "AM";
     const hour12 = h % 12 || 12;
     const minute = [0, 15, 30, 45].reduce((prev, curr) =>
       Math.abs(curr - m) < Math.abs(prev - m) ? curr : prev,
     );
-    setPickerHour(hour12);
-    setPickerMinute(minute);
-    setPickerAmPm(ampm);
+    setPickerHour(hour12); setPickerMinute(minute); setPickerAmPm(ampm);
+    setTimePickerTarget("add");
+    setShowTimePicker(true);
+  };
+
+  const openEditTimePicker = () => {
+    const src = editReminderTime;
+    const h = src.getHours();
+    const m = src.getMinutes();
+    const ampm: "AM" | "PM" = h >= 12 ? "PM" : "AM";
+    const hour12 = h % 12 || 12;
+    const minute = [0, 15, 30, 45].reduce((prev, curr) =>
+      Math.abs(curr - m) < Math.abs(prev - m) ? curr : prev,
+    );
+    setPickerHour(hour12); setPickerMinute(minute); setPickerAmPm(ampm);
+    setTimePickerTarget("edit");
     setShowTimePicker(true);
   };
 
   const confirmTimePicker = () => {
-    const d = new Date(reminderTime);
     let hours = pickerHour;
     if (pickerAmPm === "AM" && hours === 12) hours = 0;
     if (pickerAmPm === "PM" && hours !== 12) hours += 12;
-    d.setHours(hours, pickerMinute, 0, 0);
-    setReminderTime(d);
+    if (timePickerTarget === "add") {
+      const d = new Date(reminderTime);
+      d.setHours(hours, pickerMinute, 0, 0);
+      setReminderTime(d);
+    } else {
+      const d = new Date(editReminderTime);
+      d.setHours(hours, pickerMinute, 0, 0);
+      setEditReminderTime(d);
+    }
     setShowTimePicker(false);
   };
 
@@ -565,6 +664,12 @@ function AppContent() {
                             last
                           />
                           <View style={s.cabActions}>
+                            <Pressable style={s.cabBtnEdit} onPress={() => openEditPlan(plan)}>
+                              <Ionicons name="create-outline" size={16} color={C.primary} />
+                              <Text style={s.cabBtnTextEdit}>Edit Plan</Text>
+                            </Pressable>
+                          </View>
+                          <View style={s.cabActions}>
                             <Pressable
                               style={[s.cabBtn, plan.reminderEnabled ? s.cabBtnWarn : s.cabBtnPrimary]}
                               onPress={() => toggleReminder(plan)}
@@ -596,6 +701,73 @@ function AppContent() {
         <TabBtn iconName="time"       label="Daily Schedule"  active={activeTab === "schedule"}  onPress={() => setActiveTab("schedule")} />
         <TabBtn iconName="grid"       label="Cabinet"         active={activeTab === "cabinet"}   onPress={() => setActiveTab("cabinet")} />
       </View>
+
+      {/* ── EDIT PLAN MODAL ──────────────────────────────────────────────── */}
+      <Modal
+        visible={editingPlan !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditingPlan(null)}
+      >
+        <View style={s.editOverlay}>
+          <View style={s.editSheet}>
+            {/* Header */}
+            <View style={s.editSheetHeader}>
+              <Text style={s.editSheetTitle}>Edit Plan</Text>
+              <Pressable onPress={() => setEditingPlan(null)} style={s.editCloseBtn}>
+                <Ionicons name="close" size={22} color={C.textSub} />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              contentContainerStyle={s.editScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Field label="Plan name" value={editName} onChangeText={setEditName} placeholder="e.g. BPC-157" keyboardType="default" />
+
+              <View style={s.editDivider}><Text style={s.editDividerText}>Peptide & Syringe</Text></View>
+              <Field label="Total mg in vial" value={editVialMg} onChangeText={setEditVialMg} placeholder="10" suffix="mg" />
+              <Field label="Syringe max capacity" value={editSyringeMaxMl} onChangeText={setEditSyringeMaxMl} placeholder="1" suffix="mL" />
+              <Field label="Target dose" value={editTargetDoseMg} onChangeText={setEditTargetDoseMg} placeholder="2" suffix="mg" />
+
+              <View style={s.editDivider}><Text style={s.editDividerText}>Schedule</Text></View>
+              <Field label="Dose every" value={editIntervalDays} onChangeText={setEditIntervalDays} placeholder="3" suffix="days" />
+
+              <View style={s.fieldBlock}>
+                <Text style={s.fieldLabel}>Reminder time</Text>
+                <Pressable style={s.timeBtn} onPress={openEditTimePicker}>
+                  <Text style={s.timeBtnText}>{fmtTime(editReminderTime.toISOString())}</Text>
+                </Pressable>
+              </View>
+
+              <View style={s.switchRow}>
+                <View style={s.switchInfo}>
+                  <Text style={s.switchTitle}>Enable dose reminders</Text>
+                  <Text style={s.switchSub}>Get notified when it is time to dose</Text>
+                </View>
+                <Switch
+                  value={editReminderEnabled}
+                  onValueChange={setEditReminderEnabled}
+                  trackColor={{ true: C.primary, false: "#CBD5E1" }}
+                  thumbColor="#FFFFFF"
+                />
+              </View>
+
+              <Pressable
+                style={[s.primaryBtn, isSavingEdit && s.primaryBtnDisabled]}
+                onPress={saveEditedPlan}
+                disabled={isSavingEdit}
+              >
+                <Text style={s.primaryBtnText}>{isSavingEdit ? "Saving..." : "Save Changes"}</Text>
+              </Pressable>
+              <Pressable style={s.ghostBtn} onPress={() => setEditingPlan(null)}>
+                <Text style={s.ghostBtnText}>Cancel</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* ── TIME PICKER MODAL ─────────────────────────────────────────────── */}
       <Modal
@@ -1029,7 +1201,7 @@ const s = StyleSheet.create({
   detailLabel: { fontSize: 14, color: C.textSub },
   detailValue: { fontSize: 14, fontWeight: "700", color: C.text },
 
-  cabActions:        { flexDirection: "row", gap: 10, marginTop: 14 },
+  cabActions:        { flexDirection: "row", gap: 10, marginTop: 10 },
   cabBtn:            { flex: 1, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1 },
   cabBtnPrimary:     { backgroundColor: C.primaryLight, borderColor: "#B7DFC9" },
   cabBtnWarn:        { backgroundColor: C.warnLight, borderColor: "#FDE68A" },
@@ -1038,6 +1210,18 @@ const s = StyleSheet.create({
   cabBtnTextWarn:    { color: C.warn },
   cabBtnDanger:      { height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: C.dangerLight, paddingHorizontal: 16 },
   cabBtnTextDanger:  { fontSize: 13, fontWeight: "700", color: C.danger },
+  cabBtnEdit:        { flex: 1, height: 44, borderRadius: 12, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: C.primaryLight, borderWidth: 1, borderColor: "#B7DFC9" },
+  cabBtnTextEdit:    { fontSize: 14, fontWeight: "800", color: C.primary },
+
+  // Edit modal (bottom sheet)
+  editOverlay:     { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
+  editSheet:       { backgroundColor: C.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, maxHeight: "92%", paddingBottom: 20 },
+  editSheetHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 20, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: C.border },
+  editSheetTitle:  { fontSize: 20, fontWeight: "800", color: C.text },
+  editCloseBtn:    { width: 34, height: 34, borderRadius: 17, backgroundColor: "#F1F5F9", alignItems: "center", justifyContent: "center" },
+  editScroll:      { padding: 20, gap: 14, paddingBottom: 16 },
+  editDivider:     { paddingTop: 4, paddingBottom: 2, borderBottomWidth: 1, borderBottomColor: C.border },
+  editDividerText: { fontSize: 12, fontWeight: "800", color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.8, paddingBottom: 8 },
 
   // Tab bar — paddingBottom applied inline via insets
   tabBar: {
