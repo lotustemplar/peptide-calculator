@@ -108,6 +108,10 @@ export const scheduleReminderSeriesAsync = async (plan: SavedPlan) => {
   return notificationIds;
 };
 
+/** Call once on mount. Returns a subscription that must be removed on unmount. */
+export const addNotificationTapListener = (onTap: () => void) =>
+  Notifications.addNotificationResponseReceivedListener(() => onTap());
+
 export const refreshActiveReminderWindowsAsync = async (plans: SavedPlan[]) => {
   const permissions = await Notifications.getPermissionsAsync().catch(() => null);
   const canSchedule = Boolean(permissions?.granted);

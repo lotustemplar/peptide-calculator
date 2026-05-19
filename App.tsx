@@ -17,13 +17,15 @@ import { Ionicons } from "@expo/vector-icons";
 import { SavedPlan } from "./src/types";
 import { formatMg, formatMl, generateDoseOptions, parsePositiveNumber } from "./src/utils/calculator";
 import {
+  addNotificationTapListener,
   cancelReminderSeriesAsync,
   prepareNotificationsAsync,
   refreshActiveReminderWindowsAsync,
   requestReminderPermissionsAsync,
   scheduleReminderSeriesAsync,
 } from "./src/utils/notifications";
-import { loadPlans, savePlans } from "./src/utils/storage";
+import { loadPlans, loadTakenDoses, savePlans, saveTakenDoses } from "./src/utils/storage";
+import { exportBackup, importBackup } from "./src/utils/backup";
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -119,6 +121,9 @@ function AppContent() {
   const [isSaving, setIsSaving] = useState(false);
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null);
 
+  // Taken doses — key: "planId|YYYY-MM-DD"
+  const [takenDoses, setTakenDoses] = useState<Record<string, true>>({});
+
   // Edit plan modal
   const [editingPlan, setEditingPlan] = useState<SavedPlan | null>(null);
   const [editName, setEditName] = useState("");
@@ -151,15 +156,21 @@ function AppContent() {
     let alive = true;
     (async () => {
       await prepareNotificationsAsync().catch(() => {});
-      const stored = await loadPlans();
+      const [stored, taken] = await Promise.all([loadPlans(), loadTakenDoses()]);
       let hydrated = stored;
       try {
         hydrated = await refreshActiveReminderWindowsAsync(stored);
         await savePlans(hydrated);
       } catch { hydrated = stored; }
-      if (alive) { setPlans(hydrated); setIsBootstrapping(false); }
+      if (alive) { setPlans(hydrated); setTakenDoses(taken); setIsBootstrapping(false); }
     })().catch(() => { if (alive) setIsBootstrapping(false); });
     return () => { alive = false; };
+  }, []);
+
+  // Open Daily Schedule tab when a notification is tapped
+  useEffect(() => {
+    const sub = addNotificationTapListener(() => setActiveTab("schedule"));
+    return () => sub.remove();
   }, []);
 
   const persistPlans = async (next: SavedPlan[]) => {
@@ -376,6 +387,12 @@ function AppContent() {
     setShowTimePicker(false);
   };
 
+  const markTaken = async (key: string) => {
+    const updated = { ...takenDoses, [key]: true as true };
+    setTakenDoses(updated);
+    await saveTakenDoses(updated);
+  };
+
   const buildSchedule = (days: number) => {
     const now = new Date();
     const entries: Array<{
@@ -391,13 +408,28 @@ function AppContent() {
         const rt = new Date(plan.reminderTimeIso);
         const doseTime = new Date(date);
         doseTime.setHours(rt.getHours(), rt.getMinutes(), 0, 0);
-        entries.push({ key: `${plan.id}-${d}`, plan, doseTime, date, isPast: doseTime < now });
+        const dateKey = date.toISOString().slice(0, 10);
+        entries.push({ key: `${plan.id}|${dateKey}`, plan, doseTime, date, isPast: doseTime < now });
       }
     }
     return entries.sort((a, b) => a.doseTime.getTime() - b.doseTime.getTime());
   };
 
   const todayEntries = buildSchedule(1);
+
+  const upcomingGroups = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const all = buildSchedule(31);
+    const future = all.filter((e) => e.date.getTime() > today.getTime());
+    const map = new Map<string, typeof future>();
+    for (const e of future) {
+      const dk = e.date.toDateString();
+      if (!map.has(dk)) map.set(dk, []);
+      map.get(dk)!.push(e);
+    }
+    return Array.from(map.values());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plans]);
 
   // Tab bar sits above the system nav bar
   const tabBarBottomPad = Math.max(insets.bottom, 6) + 6;
@@ -569,6 +601,9 @@ function AppContent() {
               <Text style={s.headerSub}>{fmtDateLong(new Date())}</Text>
             </View>
             <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+
+              {/* ── TODAY ── */}
+              <Text style={s.schedSectionHead}>Today</Text>
               {todayEntries.length === 0 ? (
                 <View style={s.empty}>
                   <Ionicons name="checkmark-circle-outline" size={48} color={C.accent} style={{ marginBottom: 8 }} />
@@ -581,31 +616,64 @@ function AppContent() {
                 </View>
               ) : (
                 <View style={s.schedList}>
-                  {todayEntries.map(({ key, plan, doseTime, isPast }) => (
-                    <View key={key} style={[s.schedItem, isPast && s.schedItemPast]}>
-                      <View style={[s.schedIconWrap, isPast ? s.schedIconWrapPast : s.schedIconWrapToday]}>
-                        <Ionicons
-                          name={isPast ? "checkmark" : "time-outline"}
-                          size={16}
-                          color={isPast ? C.textMuted : C.primary}
-                        />
+                  {todayEntries.map(({ key, plan, doseTime, isPast }) => {
+                    const taken = Boolean(takenDoses[key]);
+                    return (
+                      <View key={key} style={[s.schedItem, (isPast || taken) && s.schedItemPast]}>
+                        <View style={[s.schedIconWrap, taken ? s.schedIconWrapTaken : isPast ? s.schedIconWrapPast : s.schedIconWrapToday]}>
+                          <Ionicons
+                            name={taken ? "checkmark-done" : isPast ? "checkmark" : "time-outline"}
+                            size={16}
+                            color={taken ? "#FFFFFF" : isPast ? C.textMuted : C.primary}
+                          />
+                        </View>
+                        <View style={s.schedContent}>
+                          <Text style={[s.schedName, (isPast || taken) && s.schedNamePast]}>{plan.name}</Text>
+                          <Text style={s.schedDose}>
+                            {formatMg(plan.targetDoseMg)} · Draw {formatMl(plan.selectedDrawMl)}
+                          </Text>
+                          <Text style={[s.schedTime, (isPast || taken) && s.schedTimePast]}>
+                            {doseTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                          </Text>
+                        </View>
+                        <View style={s.schedTimeWrap}>
+                          {taken ? (
+                            <Text style={s.takenTag}>✓ Taken</Text>
+                          ) : (
+                            <Pressable style={s.markTakenBtn} onPress={() => markTaken(key)}>
+                              <Text style={s.markTakenText}>Mark taken</Text>
+                            </Pressable>
+                          )}
+                        </View>
                       </View>
-                      <View style={s.schedContent}>
-                        <Text style={[s.schedName, isPast && s.schedNamePast]}>{plan.name}</Text>
-                        <Text style={s.schedDose}>
-                          {formatMg(plan.targetDoseMg)} · Draw {formatMl(plan.selectedDrawMl)}
-                        </Text>
-                      </View>
-                      <View style={s.schedTimeWrap}>
-                        <Text style={[s.schedTime, isPast && s.schedTimePast]}>
-                          {doseTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
-                        </Text>
-                        {isPast && <Text style={s.schedDoneTag}>Done</Text>}
-                      </View>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </View>
               )}
+
+              {/* ── UPCOMING ── */}
+              {upcomingGroups.length > 0 && (
+                <>
+                  <Text style={[s.schedSectionHead, { marginTop: 8 }]}>Upcoming</Text>
+                  {upcomingGroups.map((group) => (
+                    <View key={group[0].date.toDateString()} style={s.upcomingGroup}>
+                      <Text style={s.upcomingDate}>
+                        {group[0].date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}
+                      </Text>
+                      {group.map(({ key, plan, doseTime }) => (
+                        <View key={key} style={s.upcomingItem}>
+                          <View style={s.upcomingDot} />
+                          <Text style={s.upcomingName}>{plan.name}</Text>
+                          <Text style={s.upcomingMeta}>
+                            {formatMg(plan.targetDoseMg)} · {doseTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  ))}
+                </>
+              )}
+
               <View style={{ height: 16 }} />
             </ScrollView>
           </>
@@ -623,6 +691,45 @@ function AppContent() {
                   ? "No peptides saved yet."
                   : `${plans.length} peptide${plans.length === 1 ? "" : "s"} saved`}
               </Text>
+              {/* Backup buttons in header */}
+              <View style={s.backupRow}>
+                <Pressable
+                  style={s.backupBtn}
+                  onPress={async () => {
+                    try { await exportBackup(plans); }
+                    catch (e: any) { Alert.alert("Export failed", e?.message ?? "Unknown error"); }
+                  }}
+                >
+                  <Ionicons name="cloud-upload-outline" size={15} color="#FFFFFF" />
+                  <Text style={s.backupBtnText}>Export backup</Text>
+                </Pressable>
+                <Pressable
+                  style={[s.backupBtn, s.backupBtnImport]}
+                  onPress={async () => {
+                    try {
+                      const imported = await importBackup();
+                      if (!imported) return;
+                      Alert.alert(
+                        "Import backup?",
+                        `This will replace your ${plans.length} current plan${plans.length === 1 ? "" : "s"} with ${imported.length} from the backup. Continue?`,
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Import",
+                            onPress: async () => {
+                              await persistPlans(imported);
+                              Alert.alert("Imported!", `${imported.length} plan${imported.length === 1 ? "" : "s"} loaded.`);
+                            },
+                          },
+                        ]
+                      );
+                    } catch (e: any) { Alert.alert("Import failed", e?.message ?? "Invalid backup file"); }
+                  }}
+                >
+                  <Ionicons name="cloud-download-outline" size={15} color={C.primary} />
+                  <Text style={[s.backupBtnText, { color: C.primary }]}>Import backup</Text>
+                </Pressable>
+              </View>
             </View>
             <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
               {!isBootstrapping && plans.length === 0 ? (
@@ -1365,6 +1472,31 @@ const s = StyleSheet.create({
   editScroll:      { padding: 20, gap: 14, paddingBottom: 16 },
   editDivider:     { paddingTop: 4, paddingBottom: 2, borderBottomWidth: 1, borderBottomColor: C.border },
   editDividerText: { fontSize: 12, fontWeight: "800", color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.8, paddingBottom: 8 },
+
+  // Schedule section heading
+  schedSectionHead: { fontSize: 13, fontWeight: "800", color: C.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 },
+
+  // Taken-dose icon
+  schedIconWrapTaken: { backgroundColor: C.primary },
+
+  // Mark taken button
+  markTakenBtn:  { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10, backgroundColor: C.primaryLight, borderWidth: 1, borderColor: "#B7DFC9" },
+  markTakenText: { fontSize: 12, fontWeight: "800", color: C.primary },
+  takenTag:      { fontSize: 12, fontWeight: "800", color: C.accent },
+
+  // Upcoming calendar
+  upcomingGroup: { backgroundColor: C.card, borderRadius: 16, padding: 14, gap: 8, borderWidth: 1, borderColor: C.border, elevation: 1 },
+  upcomingDate:  { fontSize: 14, fontWeight: "800", color: C.text, marginBottom: 2 },
+  upcomingItem:  { flexDirection: "row", alignItems: "center", gap: 8 },
+  upcomingDot:   { width: 7, height: 7, borderRadius: 4, backgroundColor: C.accent },
+  upcomingName:  { fontSize: 14, fontWeight: "700", color: C.text, flex: 1 },
+  upcomingMeta:  { fontSize: 13, color: C.textSub },
+
+  // Backup buttons in cabinet header
+  backupRow:        { flexDirection: "row", gap: 8, marginTop: 12 },
+  backupBtn:        { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingVertical: 8, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.2)" },
+  backupBtnImport:  { backgroundColor: "rgba(255,255,255,0.9)" },
+  backupBtnText:    { fontSize: 12, fontWeight: "800", color: "#FFFFFF" },
 
   // Tab bar — paddingBottom applied inline via insets
   tabBar: {

@@ -23,7 +23,8 @@
         {
           "defaultChannel": "dose-reminders"
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "extra": {
       "eas": {
