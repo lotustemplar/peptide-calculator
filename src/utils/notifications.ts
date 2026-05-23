@@ -7,17 +7,22 @@ import { formatMg, formatMl } from "./calculator";
 const CHANNEL_ID = "dose-reminders";
 const REMINDER_WINDOW = 48;
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+// Notifications are not supported on web
+const IS_WEB = Platform.OS === "web";
+
+if (!IS_WEB) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 export const prepareNotificationsAsync = async () => {
-  if (Platform.OS !== "android") {
+  if (IS_WEB || Platform.OS !== "android") {
     return;
   }
 
@@ -32,6 +37,7 @@ export const prepareNotificationsAsync = async () => {
 };
 
 export const requestReminderPermissionsAsync = async () => {
+  if (IS_WEB) return false;
   await prepareNotificationsAsync();
 
   const current = await Notifications.getPermissionsAsync();
@@ -72,6 +78,7 @@ const buildReminderDates = (intervalDays: number, reminderTimeIso: string) => {
 };
 
 export const cancelReminderSeriesAsync = async (notificationIds: string[]) => {
+  if (IS_WEB) return;
   await Promise.all(
     notificationIds.map((notificationId) =>
       Notifications.cancelScheduledNotificationAsync(notificationId).catch(() => undefined),
@@ -80,6 +87,7 @@ export const cancelReminderSeriesAsync = async (notificationIds: string[]) => {
 };
 
 export const scheduleReminderSeriesAsync = async (plan: SavedPlan) => {
+  if (IS_WEB) return [];
   await prepareNotificationsAsync();
 
   const reminderDates = buildReminderDates(plan.intervalDays, plan.reminderTimeIso);
@@ -109,10 +117,13 @@ export const scheduleReminderSeriesAsync = async (plan: SavedPlan) => {
 };
 
 /** Call once on mount. Returns a subscription that must be removed on unmount. */
-export const addNotificationTapListener = (onTap: () => void) =>
-  Notifications.addNotificationResponseReceivedListener(() => onTap());
+export const addNotificationTapListener = (onTap: () => void) => {
+  if (IS_WEB) return { remove: () => {} };
+  return Notifications.addNotificationResponseReceivedListener(() => onTap());
+};
 
 export const refreshActiveReminderWindowsAsync = async (plans: SavedPlan[]) => {
+  if (IS_WEB) return plans;
   const permissions = await Notifications.getPermissionsAsync().catch(() => null);
   const canSchedule = Boolean(permissions?.granted);
   const refreshedPlans: SavedPlan[] = [];
