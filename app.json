@@ -12,9 +12,6 @@
       "output": "single",
       "favicon": "./assets/icon.png"
     },
-    "experiments": {
-      "baseUrl": "/peptide-calculator"
-    },
     "android": {
       "package": "com.peptidecalculator.app",
       "adaptiveIcon": {

@@ -28,6 +28,9 @@ jobs:
       - name: Build web
         run: npx expo export --platform web
 
+      - name: Add CNAME for custom domain
+        run: echo "calculator.fitgenlabs.com" > dist/CNAME
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
