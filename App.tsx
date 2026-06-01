@@ -431,6 +431,33 @@ function AppContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plans]);
 
+  // Past 30 days — all plans regardless of reminder status so history is complete
+  const pastGroups = useMemo(() => {
+    const entries: Array<{ key: string; plan: SavedPlan; doseTime: Date; date: Date }> = [];
+    for (let d = 1; d <= 30; d++) {
+      const date = new Date();
+      date.setDate(date.getDate() - d);
+      date.setHours(0, 0, 0, 0);
+      for (const plan of plans) {
+        if (!isDoseDay(plan, date)) continue;
+        const rt = new Date(plan.reminderTimeIso);
+        const doseTime = new Date(date);
+        doseTime.setHours(rt.getHours(), rt.getMinutes(), 0, 0);
+        const dateKey = date.toISOString().slice(0, 10);
+        entries.push({ key: `${plan.id}|${dateKey}`, plan, doseTime, date });
+      }
+    }
+    entries.sort((a, b) => b.doseTime.getTime() - a.doseTime.getTime());
+    const map = new Map<string, typeof entries>();
+    for (const e of entries) {
+      const dk = e.date.toDateString();
+      if (!map.has(dk)) map.set(dk, []);
+      map.get(dk)!.push(e);
+    }
+    return Array.from(map.values());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plans]);
+
   // Tab bar sits above the system nav bar
   const tabBarBottomPad = Math.max(insets.bottom, 6) + 6;
 
@@ -619,21 +646,22 @@ function AppContent() {
                   {todayEntries.map(({ key, plan, doseTime, isPast }) => {
                     const taken = Boolean(takenDoses[key]);
                     return (
-                      <View key={key} style={[s.schedItem, (isPast || taken) && s.schedItemPast]}>
+                      <View key={key} style={[s.schedItem, taken && s.schedItemDone]}>
                         <View style={[s.schedIconWrap, taken ? s.schedIconWrapTaken : isPast ? s.schedIconWrapPast : s.schedIconWrapToday]}>
                           <Ionicons
-                            name={taken ? "checkmark-done" : isPast ? "checkmark" : "time-outline"}
+                            name={taken ? "checkmark-done" : "time-outline"}
                             size={16}
-                            color={taken ? "#FFFFFF" : isPast ? C.textMuted : C.primary}
+                            color={taken ? "#FFFFFF" : isPast ? C.warn : C.primary}
                           />
                         </View>
                         <View style={s.schedContent}>
-                          <Text style={[s.schedName, (isPast || taken) && s.schedNamePast]}>{plan.name}</Text>
+                          <Text style={[s.schedName, taken && s.schedNamePast]}>{plan.name}</Text>
                           <Text style={s.schedDose}>
                             {formatMg(plan.targetDoseMg)} · Draw {formatMl(plan.selectedDrawMl)}
                           </Text>
-                          <Text style={[s.schedTime, (isPast || taken) && s.schedTimePast]}>
+                          <Text style={[s.schedTime, taken && s.schedTimePast, isPast && !taken && s.schedTimeOverdue]}>
                             {doseTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                            {isPast && !taken ? "  ⚠ overdue" : ""}
                           </Text>
                         </View>
                         <View style={s.schedTimeWrap}>
@@ -671,6 +699,42 @@ function AppContent() {
                       ))}
                     </View>
                   ))}
+                </>
+              )}
+
+              {/* ── PAST HISTORY ── */}
+              {pastGroups.length > 0 && (
+                <>
+                  <Text style={[s.schedSectionHead, { marginTop: 8 }]}>Past 30 Days</Text>
+                  {pastGroups.map((group) => {
+                    const dateLabel = group[0].date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+                    return (
+                      <View key={group[0].date.toDateString()} style={s.pastGroup}>
+                        <Text style={s.pastGroupDate}>{dateLabel}</Text>
+                        {group.map(({ key, plan, doseTime }) => {
+                          const taken = Boolean(takenDoses[key]);
+                          return (
+                            <View key={key} style={s.pastItem}>
+                              <View style={[s.pastDot, taken ? s.pastDotTaken : s.pastDotMissed]} />
+                              <View style={{ flex: 1 }}>
+                                <Text style={s.pastName}>{plan.name}</Text>
+                                <Text style={s.pastMeta}>
+                                  {formatMg(plan.targetDoseMg)} · {doseTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                                </Text>
+                              </View>
+                              {taken ? (
+                                <Text style={s.pastTakenTag}>✓ Taken</Text>
+                              ) : (
+                                <Pressable style={s.markTakenBtn} onPress={() => markTaken(key)}>
+                                  <Text style={s.markTakenText}>Mark taken</Text>
+                                </Pressable>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </View>
+                    );
+                  })}
                 </>
               )}
 
@@ -791,6 +855,7 @@ function AppContent() {
                             value={`Every ${plan.intervalDays} day${plan.intervalDays === 1 ? "" : "s"} at ${fmtTime(plan.reminderTimeIso)}`}
                             last
                           />
+                          <VialTracker plan={plan} takenDoses={takenDoses} />
                           <View style={s.cabActions}>
                             <Pressable style={s.cabBtnEdit} onPress={() => openEditPlan(plan)}>
                               <Ionicons name="create-outline" size={16} color={C.primary} />
@@ -1090,6 +1155,64 @@ const dp = StyleSheet.create({
   dayTextSel:    { color: "#FFFFFF", fontWeight: "800" },
   dayTextToday:  { color: C.primary, fontWeight: "800" },
 });
+
+// ─── Vial Tracker ─────────────────────────────────────────────────────────────
+
+function VialTracker({ plan, takenDoses }: { plan: SavedPlan; takenDoses: Record<string, true> }) {
+  const totalDoses = Math.max(1, Math.round(plan.vialMg / plan.targetDoseMg));
+  const dosesTaken = Object.keys(takenDoses).filter(k => k.startsWith(plan.id + "|")).length;
+  const remaining  = Math.max(0, totalDoses - dosesTaken);
+  const pct        = remaining / totalDoses;
+  const low        = remaining <= Math.max(1, Math.ceil(totalDoses * 0.25));
+  const mlLeft     = remaining * plan.selectedDrawMl;
+
+  // colour ramp: green → amber → red
+  const fillColor  = pct > 0.5 ? C.accent : pct > 0.25 ? C.warn : C.danger;
+
+  return (
+    <View style={s.vialTracker}>
+      <View style={s.vialTrackerHeader}>
+        <Ionicons name="flask" size={14} color={fillColor} />
+        <Text style={s.vialTrackerTitle}>Vial Status</Text>
+        {low && remaining > 0 && (
+          <View style={[s.vialLowBadge, { backgroundColor: pct > 0.25 ? C.warnLight : C.dangerLight }]}>
+            <Text style={[s.vialLowText, { color: pct > 0.25 ? C.warn : C.danger }]}>
+              {remaining === 1 ? "⚠ Last dose" : "⚠ Low supply"}
+            </Text>
+          </View>
+        )}
+        {remaining === 0 && (
+          <View style={[s.vialLowBadge, { backgroundColor: C.dangerLight }]}>
+            <Text style={[s.vialLowText, { color: C.danger }]}>Empty</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Bar */}
+      <View style={s.vialBar}>
+        <View style={[s.vialBarFill, { width: `${Math.round(pct * 100)}%` as any, backgroundColor: fillColor }]} />
+      </View>
+
+      {/* Segment ticks */}
+      <View style={s.vialTicks}>
+        {Array.from({ length: totalDoses - 1 }).map((_, i) => (
+          <View
+            key={i}
+            style={[s.vialTick, { left: `${((i + 1) / totalDoses) * 100}%` as any }]}
+          />
+        ))}
+      </View>
+
+      <View style={s.vialTrackerMeta}>
+        <Text style={s.vialTrackerText}>
+          <Text style={{ fontWeight: "800", color: C.text }}>{remaining}</Text>
+          <Text> of {totalDoses} doses left</Text>
+        </Text>
+        <Text style={s.vialTrackerText}>{formatMl(mlLeft)} remaining in vial</Text>
+      </View>
+    </View>
+  );
+}
 
 // ─── Step Illustrations ───────────────────────────────────────────────────────
 
@@ -1401,7 +1524,8 @@ const s = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  schedItemPast:     { opacity: 0.55 },
+  schedItemDone:     { opacity: 0.55 },
+  schedTimeOverdue:  { color: C.warn, fontWeight: "700" as const },
   schedIconWrap:     { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
   schedIconWrapToday: { backgroundColor: C.primaryLight },
   schedIconWrapPast:  { backgroundColor: "#F1F5F9" },
@@ -1491,6 +1615,30 @@ const s = StyleSheet.create({
   upcomingDot:   { width: 7, height: 7, borderRadius: 4, backgroundColor: C.accent },
   upcomingName:  { fontSize: 14, fontWeight: "700", color: C.text, flex: 1 },
   upcomingMeta:  { fontSize: 13, color: C.textSub },
+
+  // Past history section
+  pastGroup:     { backgroundColor: C.card, borderRadius: 16, padding: 14, gap: 10, borderWidth: 1, borderColor: C.border, elevation: 1 },
+  pastGroupDate: { fontSize: 13, fontWeight: "800", color: C.textSub, marginBottom: 2 },
+  pastItem:      { flexDirection: "row" as const, alignItems: "center" as const, gap: 10 },
+  pastDot:       { width: 10, height: 10, borderRadius: 5 },
+  pastDotTaken:  { backgroundColor: C.accent },
+  pastDotMissed: { backgroundColor: "#E2EAE6", borderWidth: 1, borderColor: C.textMuted },
+  pastName:      { fontSize: 14, fontWeight: "700" as const, color: C.text },
+  pastMeta:      { fontSize: 12, color: C.textSub },
+  pastTakenTag:  { fontSize: 12, fontWeight: "800" as const, color: C.accent },
+
+  // Vial tracker
+  vialTracker:       { marginTop: 12, backgroundColor: C.bg, borderRadius: 12, padding: 12, gap: 8 },
+  vialTrackerHeader: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+  vialTrackerTitle:  { fontSize: 13, fontWeight: "700" as const, color: C.text, flex: 1 },
+  vialLowBadge:      { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 },
+  vialLowText:       { fontSize: 11, fontWeight: "800" as const },
+  vialBar:           { height: 12, backgroundColor: C.border, borderRadius: 6, overflow: "hidden" as const },
+  vialBarFill:       { height: "100%" as any, borderRadius: 6 },
+  vialTicks:         { position: "relative" as const, height: 0 },
+  vialTick:          { position: "absolute" as const, top: -12, width: 1, height: 12, backgroundColor: "rgba(255,255,255,0.6)" },
+  vialTrackerMeta:   { flexDirection: "row" as const, justifyContent: "space-between" as const },
+  vialTrackerText:   { fontSize: 12, color: C.textSub },
 
   // Backup buttons in cabinet header
   backupRow:        { flexDirection: "row", gap: 8, marginTop: 12 },
